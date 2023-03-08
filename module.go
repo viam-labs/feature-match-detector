@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"image"
 	"math"
 
@@ -17,6 +19,7 @@ import (
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/rimage"
 	"go.viam.com/rdk/services/vision"
+	"go.viam.com/rdk/utils"
 	kp "go.viam.com/rdk/vision/keypoints"
 	"go.viam.com/rdk/vision/objectdetection"
 )
@@ -61,8 +64,8 @@ func registerDetector() {
 		}})
 }
 
-// FeatureMatchDetectorConfig specifies the fields necessary for creating a feature match detector.
-type FeatureMatchDetectorConfig struct {
+// FeatureMatchDetectorParams specifies the fields necessary for creating a feature match detector.
+type FeatureMatchDetectorParams struct {
 	// this should come from the attributes part of the detector config
 	ReferenceImagePath string `json:"reference_image_path"`
 	MaxDist            int    `json:"max_match_distance,omitempty"`
@@ -78,16 +81,28 @@ type OrbKP struct {
 // a keypoints package and wrapping the result.
 func newFeatureMatchDetector(
 	ctx context.Context,
-	config config.Service,
+	conf config.Service,
 	logger golog.Logger,
 ) (objectdetection.Detector, error) {
 	ctx, span := trace.StartSpan(ctx, "service::vision::NewFeatureMatchDetector")
 	defer span.End()
 
-	// load reference image and compute keypoints
-	img, err := rimage.NewImageFromFile(config.Attributes.String("reference_image_path"))
+	var t FeatureMatchDetectorParams
+	fmParams, err := config.TransformAttributeMapToStruct(&t, config.AttributeMap(conf.Attributes))
+
 	if err != nil {
-		return nil, errors.Wrap(err, "something wrong with loading the reference image")
+		return nil, errors.New("error getting parameters from config")
+	}
+	params, ok := fmParams.(*FeatureMatchDetectorParams)
+	if !ok {
+		err := utils.NewUnexpectedTypeError(params, fmParams)
+		return nil, errors.Wrapf(err, "register feature match detector %s", conf.Name)
+	}
+
+	// load reference image and compute keypoints
+	img, err := rimage.NewImageFromFile(params.ReferenceImagePath)
+	if err != nil {
+		return nil, errors.Wrapf(err, "something wrong with loading the reference image: %s", params.ReferenceImagePath)
 	}
 	refKPs, err := getImageKeypoints(ctx, img)
 	if err != nil {
@@ -96,9 +111,13 @@ func newFeatureMatchDetector(
 
 	// This function to be returned is the detector.
 	return func(ctx context.Context, img image.Image) ([]objectdetection.Detection, error) {
+		maxDist := params.MaxDist
+		if maxDist == 0 {
+			maxDist = 50
+		}
 		matchingConf := &kp.MatchingConfig{
 			DoCrossCheck: true,
-			MaxDist:      config.Attributes.Int("max_match_distance", 50),
+			MaxDist:      maxDist,
 		}
 		imgKPs, err := getImageKeypoints(ctx, rimage.ConvertImage(img))
 		if err != nil {
@@ -110,6 +129,8 @@ func newFeatureMatchDetector(
 		// Only ever return max one detection
 		var detections = []objectdetection.Detection{}
 		detections[0] = objectdetection.NewDetection(bounds, 1, "match")
+		res2B, _ := json.Marshal(detections)
+		fmt.Println(string(res2B))
 		return detections, nil
 	}, nil
 }
