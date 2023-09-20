@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import ClassVar, Mapping, Sequence, Any, Dict, Optional, Tuple, Final, List, cast
 from typing_extensions import Self
 
@@ -28,7 +29,6 @@ from pathlib import Path
 
 DETECTOR = cv2.SIFT_create()
 MATCHER = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
-MIN_MATCH_COUNT = 15
 LOGGER = getLogger(__name__)
 
 class featureMatchDetector(Vision, Reconfigurable):
@@ -59,14 +59,18 @@ class featureMatchDetector(Vision, Reconfigurable):
     # Handles attribute reconfiguration
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         self.source_image_path = config.attributes.fields["source_image_path"].string_value
+        self.init_source_image()
+        self.min_good_matches = config.attributes.fields["min_good_matches"].number_value or 15
+        return
+
+    def init_source_image(self):
         im = Image.open(self.source_image_path)
         imgTrainGray = cv2.cvtColor(np.array(im), cv2.COLOR_BGR2GRAY)
         kp1, des1 = DETECTOR.detectAndCompute(imgTrainGray,None)
         self.source_keypoints = kp1
         self.source_descriptors = des1
-
         return
-
+    
     async def get_detections_from_camera(
         self, camera_name: str, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None
     ) -> List[Detection]:
@@ -91,7 +95,7 @@ class featureMatchDetector(Vision, Reconfigurable):
             if m.distance < .7 * n.distance:
                 good.append(m)
 
-        if len(good) >= MIN_MATCH_COUNT:
+        if len(good) >= self.min_good_matches:
             src_pts = np.float32([ self.source_keypoints[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
             dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
             M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
@@ -105,8 +109,24 @@ class featureMatchDetector(Vision, Reconfigurable):
                                     "x_max": max_x, "y_max": max_y } )
         return detections
 
-    async def do_command(self):
-        return
+    # Implements set=[{key=,value=}] to allow for config changes on the fly
+    async def do_command(self, input: Mapping[str, ValueTypes], *,
+                         timeout: Optional[float] = None,
+                         **kwargs) -> Mapping[str, ValueTypes]:
+        LOGGER.info(input)
+        resp = {
+            "response": "OK",
+            "timestamp": str(datetime.now())
+        }
+        if "set" in input.keys():
+            for s in input["set"]:
+                if "key" in s.keys():
+                    if s["key"] == "source_image_path":
+                        self.source_image_path = s["value"]
+                        self.init_source_image()
+                    if s["key"] == "min_good_matches":
+                        self.min_good_matches = s["value"]
+        return resp
     
     async def get_classifications(self):
         return
