@@ -1,0 +1,13 @@
+{
+  "module_id": "viam-labs:feature-match-detector",
+  "visibility": "public",
+  "url": "https://github.com/viam-labs/feature-match-detector",
+  "description": "feature-match-detector is a Viam modular vision service that uses OpenCV's implementation of the SIFT algorithm to identify feature-based matches between a source (reference) image and another image.",
+  "models": [
+    {
+      "api": "rdk:service:vision",
+      "model": "viam-labs:detector:feature-match-detector"
+    }
+  ],
+  "entrypoint": "run.sh"
+}
