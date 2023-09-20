@@ -1,0 +1,4 @@
+viam-sdk
+numpy
+opencv-python
+pillow
