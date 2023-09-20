@@ -26,9 +26,9 @@ import cv2
 
 from pathlib import Path
 
-ORB = cv2.ORB_create()
-BF = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-MIN_MATCH_COUNT = 20
+DETECTOR = cv2.SIFT_create()
+MATCHER = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
+MIN_MATCH_COUNT = 15
 LOGGER = getLogger(__name__)
 
 class featureMatchDetector(Vision, Reconfigurable):
@@ -59,8 +59,9 @@ class featureMatchDetector(Vision, Reconfigurable):
     # Handles attribute reconfiguration
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         self.source_image_path = config.attributes.fields["source_image_path"].string_value
-        im = Image.open(self.source_image_path) 
-        kp1, des1 = ORB.detectAndCompute(im,None)
+        im = Image.open(self.source_image_path)
+        imgTrainGray = cv2.cvtColor(np.array(im), cv2.COLOR_BGR2GRAY)
+        kp1, des1 = DETECTOR.detectAndCompute(imgTrainGray,None)
         self.source_keypoints = kp1
         self.source_descriptors = des1
 
@@ -82,19 +83,25 @@ class featureMatchDetector(Vision, Reconfigurable):
         timeout: Optional[float] = None,
     ) -> List[Detection]:
         detections = []
-        kp2, des2 = ORB.detectAndCompute(image,None)
-        matches = BF.match(self.source_descriptors,des2)
+        imgTrainGray = cv2.cvtColor(np.array(image), cv2.COLOR_BGR2GRAY)
+        kp2, des2 = DETECTOR.detectAndCompute(imgTrainGray,None)
+        matches = MATCHER.knnMatch(self.source_descriptors,des2,2)
         good = []
         for m,n in matches:
-            if m.distance < 0.7*n.distance:
+            if m.distance < .7 * n.distance:
                 good.append(m)
-        if len(good) > MIN_MATCH_COUNT:
+
+        if len(good) >= MIN_MATCH_COUNT:
             src_pts = np.float32([ self.source_keypoints[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
             dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
             M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
+            pts = dst_pts[mask==1]
             min_x, min_y = np.int32(pts.min(axis=0))
             max_x, max_y = np.int32(pts.max(axis=0))
-            detections.append({ "confidence": 1, "class_name": "match", "x_min": min_x, "y_min": min_y, 
+            confidence = len(good) / 40
+            if confidence > 1:
+                confidence = 1
+            detections.append({ "confidence": confidence, "class_name": "match", "x_min": min_x, "y_min": min_y, 
                                     "x_max": max_x, "y_max": max_y } )
         return detections
 

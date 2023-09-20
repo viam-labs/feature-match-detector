@@ -2,3 +2,4 @@ viam-sdk
 numpy
 opencv-python
 pillow
+opencv-contrib-python
