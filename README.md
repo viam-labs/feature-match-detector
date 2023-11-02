@@ -3,6 +3,14 @@
 
 *feature-match-detector* is a Viam modular vision service that uses [OpenCV's implementation of the SIFT algorithm](https://docs.opencv.org/4.x/da/df5/tutorial_py_sift_intro.html) to identify feature-based matches between a source (reference) image and another image.
 
+## Prerequisites
+
+For linux:
+
+``` bash
+sudo apt-get install libgl1
+```
+
 ## API
 
 The feature-match-detector resource provides the following methods from Viam's built-in [rdk:service:vision API](https://python.viam.dev/autoapi/viam/services/vision/client/index.html)
