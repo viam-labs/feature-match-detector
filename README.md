@@ -11,6 +11,14 @@ The feature-match-detector resource provides the following methods from Viam's b
 
 ### get_detections_from_camera(camera_name=*string*)
 
+Note: if using this method, any cameras you are using must be set in the `depends_on` array for the service configuration, for example:
+
+```json
+      "depends_on": [
+        "cam"
+      ]
+```
+
 ### do_command({"set":[{"key":"value"}]})
 
 If you pass set as the key in an object passed to do_command, you may then re-configure this resource on the fly by specifying config attributes to change.

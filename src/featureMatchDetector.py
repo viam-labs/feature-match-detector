@@ -61,6 +61,7 @@ class featureMatchDetector(Vision, Reconfigurable):
         self.source_image_path = config.attributes.fields["source_image_path"].string_value
         self.init_source_image()
         self.min_good_matches = config.attributes.fields["min_good_matches"].number_value or 15
+        self.DEPS = dependencies
         return
 
     def init_source_image(self):
@@ -74,8 +75,9 @@ class featureMatchDetector(Vision, Reconfigurable):
     async def get_detections_from_camera(
         self, camera_name: str, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None
     ) -> List[Detection]:
-        cam = Camera.from_robot(self.parent, camera_name)
-        cam_image = await cam.get_image()
+        actual_cam = self.DEPS[Camera.get_resource_name(camera_name)]
+        cam = cast(Camera, actual_cam)
+        cam_image = await cam.get_image(mime_type="image/jpeg")
         return self.get_detections(cam_image)
 
     
