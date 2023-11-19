@@ -102,13 +102,14 @@ class featureMatchDetector(Vision, Reconfigurable):
             dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
             M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
             pts = dst_pts[mask==1]
-            min_x, min_y = np.int32(pts.min(axis=0))
-            max_x, max_y = np.int32(pts.max(axis=0))
-            confidence = len(good) / 40
-            if confidence > 1:
-                confidence = 1
-            detections.append({ "confidence": confidence, "class_name": "match", "x_min": min_x, "y_min": min_y, 
-                                    "x_max": max_x, "y_max": max_y } )
+            if len(pts):
+                min_x, min_y = np.int32(pts.min(axis=0))
+                max_x, max_y = np.int32(pts.max(axis=0))
+                confidence = len(good) / 40
+                if confidence > 1:
+                    confidence = 1
+                detections.append({ "confidence": confidence, "class_name": "match", "x_min": min_x, "y_min": min_y, 
+                                        "x_max": max_x, "y_max": max_y } )
         return detections
 
     # Implements set=[{key=,value=}] to allow for config changes on the fly
