@@ -6,7 +6,6 @@ from typing import Any, Final, List, Mapping, Optional, Union
 
 from PIL import Image
 
-from viam.media.video import RawImage
 from viam.proto.service.vision import Detection
 from viam.resource.types import RESOURCE_NAMESPACE_RDK, RESOURCE_TYPE_SERVICE, Subtype
 from viam.utils import ValueTypes
@@ -17,8 +16,11 @@ from viam.proto.common import ResourceName
 from viam.resource.base import ResourceBase
 from viam.resource.types import Model, ModelFamily
 
-from viam.services.vision import Vision
-from viam.components.camera import Camera
+from viam.services.vision import Vision, CaptureAllResult
+from viam.proto.service.vision import GetPropertiesResponse
+from viam.components.camera import Camera, ViamImage
+from viam.media.utils.pil import viam_to_pil_image
+
 from viam.logging import getLogger
 
 import asyncio
@@ -55,7 +57,7 @@ class featureMatchDetector(Vision, Reconfigurable):
         if not Path(source_image_path).exists():
             raise Exception("Invalid source_image_path: " + source_image_path)
         return
-
+        
     # Handles attribute reconfiguration
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         self.source_image_path = config.attributes.fields["source_image_path"].string_value
@@ -64,6 +66,15 @@ class featureMatchDetector(Vision, Reconfigurable):
         self.DEPS = dependencies
         return
 
+    async def get_cam_image(
+        self,
+        camera_name: str
+    ) -> Image:
+        actual_cam = self.DEPS[Camera.get_resource_name(camera_name)]
+        cam = cast(Camera, actual_cam)
+        cam_image = await cam.get_image(mime_type="image/jpeg")
+        return viam_to_pil_image(cam_image)
+    
     def init_source_image(self):
         im = Image.open(self.source_image_path)
         imgTrainGray = cv2.cvtColor(np.array(im), cv2.COLOR_BGR2GRAY)
@@ -75,21 +86,18 @@ class featureMatchDetector(Vision, Reconfigurable):
     async def get_detections_from_camera(
         self, camera_name: str, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None
     ) -> List[Detection]:
-        actual_cam = self.DEPS[Camera.get_resource_name(camera_name)]
-        cam = cast(Camera, actual_cam)
-        cam_image = await cam.get_image(mime_type="image/jpeg")
-        return await self.get_detections(cam_image)
+        return await self.get_detections(await self.get_cam_image(camera_name))
 
     
     async def get_detections(
         self,
-        image: Union[Image.Image, RawImage],
+        image: ViamImage,
         *,
         extra: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> List[Detection]:
         detections = []
-        imgTrainGray = cv2.cvtColor(np.array(image), cv2.COLOR_BGR2GRAY)
+        imgTrainGray = cv2.cvtColor(np.array(viam_to_pil_image(image)), cv2.COLOR_BGR2GRAY)
         kp2, des2 = DETECTOR.detectAndCompute(imgTrainGray,None)
         matches = MATCHER.knnMatch(self.source_descriptors,des2,2)
         good = []
@@ -139,3 +147,31 @@ class featureMatchDetector(Vision, Reconfigurable):
     
     async def get_object_point_clouds(self):
         return
+    
+    async def capture_all_from_camera(
+        self,
+        camera_name: str,
+        return_image: bool = False,
+        return_classifications: bool = False,
+        return_detections: bool = False,
+        return_object_point_clouds: bool = False,
+        *,
+        extra: Optional[Mapping[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> CaptureAllResult:
+        result = CaptureAllResult()
+        result.image = await self.get_cam_image(camera_name)
+        result.classifications = await self.get_detections(result.image, 1)
+        return result
+
+    async def get_properties(
+        self,
+        *,
+        extra: Optional[Mapping[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> GetPropertiesResponse:
+        return GetPropertiesResponse(
+            classifications_supported=False,
+            detections_supported=True,
+            object_point_clouds_supported=False
+        )
