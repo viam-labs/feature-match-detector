@@ -161,7 +161,7 @@ class featureMatchDetector(Vision, Reconfigurable):
     ) -> CaptureAllResult:
         result = CaptureAllResult()
         result.image = await self.get_cam_image(camera_name)
-        result.classifications = await self.get_detections(result.image, 1)
+        result.detections = await self.get_detections(result.image)
         return result
 
     async def get_properties(
