@@ -73,7 +73,7 @@ class featureMatchDetector(Vision, Reconfigurable):
         actual_cam = self.DEPS[Camera.get_resource_name(camera_name)]
         cam = cast(Camera, actual_cam)
         cam_image = await cam.get_image(mime_type="image/jpeg")
-        return viam_to_pil_image(cam_image)
+        return cam_image
     
     def init_source_image(self):
         im = Image.open(self.source_image_path)
