@@ -1,71 +1,78 @@
+# `feature-match-detector` modular service
 
-# feature-match-detector
+This module implements the [vision service API](https://docs.viam.com/dev/reference/apis/services/vision/) in a `rdk:service:vision:feature-match-detector` model.
+With this model, you can identify feature-based matches between a source (reference) image and another image using [OpenCV's implementation of the SIFT algorithm](https://docs.opencv.org/4.x/da/df5/tutorial_py_sift_intro.html).
 
-*feature-match-detector* is a Viam modular vision service that uses [OpenCV's implementation of the SIFT algorithm](https://docs.opencv.org/4.x/da/df5/tutorial_py_sift_intro.html) to identify feature-based matches between a source (reference) image and another image.
+Navigate to the **CONFIGURE** tab of your machine's page.
+Click the **+** button, select **Component or service**, then select the `vision / feature-match-detector` model provided by the [`feature-match-detector` module](https://app.viam.com/module/feature-match-detector).
+Click **Add module**, enter a name for your vision service, and click **Create**.
 
-## Prerequisites
+## Configure your `feature-match-detector` service
 
-For linux:
-
-``` bash
-sudo apt-get install libgl1
-```
-
-## API
-
-The feature-match-detector resource provides the following methods from Viam's built-in [rdk:service:vision API](https://python.viam.dev/autoapi/viam/services/vision/client/index.html)
-
-### get_detections(image=*binary*)
-
-### get_detections_from_camera(camera_name=*string*)
-
-Note: if using this method, any cameras you are using must be set in the `depends_on` array for the service configuration, for example:
+On the new service panel, copy and paste the following attribute template into your service's **Attributes** box:
 
 ```json
-      "depends_on": [
-        "cam"
-      ]
-```
-
-### do_command({"set":[{"key":"value"}]})
-
-If you pass set as the key in an object passed to do_command, you may then re-configure this resource on the fly by specifying config attributes to change.
-
-For example, the following passed to do_command would change the source image:
-
-``` json
 {
-    "set":
-    [
-        { 
-            "key":"source_image_path",
-            "value":"/path/to/refImage.png"
-        }
-    ]
+  "source_image_path": "<string>",
+  "min_good_matches": <integer>
 }
 ```
 
-## Viam Service Configuration
+### Attributes
 
-The following attributes may be configured as feature-match-detector config attributes.
+The following attributes are available for `rdk:service:vision:feature-match-detector` services:
 
-For example: the following configuration would configure the source image, and select minimum 20 good key point matches:
+| Name                | Type    | Inclusion | Description |
+| ------------------- | ------- | --------- | ----------- |
+| `source_image_path` | string  | Required  | The path to the reference image to which other images will be matched against |
+| `min_good_matches`  | integer | Optional  | The minimum number of "good" keypoint matches (default: 15) |
 
-``` json
+### Example Configuration
+
+```json
 {
   "source_image_path": "/path/to/your_reference_image.jpg",
   "min_good_matches": 20
 }
 ```
 
-### source_image_path
+## Prerequisites
 
-*string (required)*
+For Linux systems, install the required OpenGL library:
 
-The path to the reference image to which other images will be matched against.
+```bash
+sudo apt-get install libgl1
+```
 
-### min_good_matches
+## API Methods
 
-*integer (default: 15)*
+The `feature-match-detector` service provides the following methods from Viam's built-in [vision service API](https://docs.viam.com/dev/reference/apis/services/vision/):
 
-The minimum number of "good" keypoint matches (as determined by [Lowe's ratio test](https://docs.opencv.org/3.4/d5/d6f/tutorial_feature_flann_matcher.html)).
+### `get_detections(image=*binary*)`
+
+### `get_detections_from_camera(camera_name=*string*)`
+
+Note: If using this method, any cameras you are using must be set in the `depends_on` array for the service configuration:
+
+```json
+{
+  "depends_on": [
+    "cam"
+  ]
+}
+```
+
+### `do_command({"set":[{"key":"value"}]})`
+
+You can re-configure this resource on the fly by passing a "set" object to do_command. For example, to change the source image:
+
+```json
+{
+  "set": [
+    {
+      "key": "source_image_path",
+      "value": "/path/to/refImage.png"
+    }
+  ]
+}
+```
