@@ -10,6 +10,7 @@ from viam.proto.service.vision import Detection
 from viam.resource.types import RESOURCE_NAMESPACE_RDK, RESOURCE_TYPE_SERVICE, Subtype
 from viam.utils import ValueTypes
 
+from viam.media.video import CameraMimeType
 from viam.module.types import Reconfigurable
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import ResourceName
@@ -72,8 +73,13 @@ class featureMatchDetector(Vision, Reconfigurable):
     ) -> ViamImage:
         actual_cam = self.DEPS[Camera.get_resource_name(camera_name)]
         cam = cast(Camera, actual_cam)
-        cam_image = await cam.get_image(mime_type="image/jpeg")
-        return cam_image
+        images, _ = await cam.get_images()
+        if not images:
+            raise Exception("get_images from cam returned no images")
+        for img in images:
+            if img.mime_type == CameraMimeType.JPEG:
+                return img
+        raise Exception(f"no images from cam is {CameraMimeType.JPEG}")
     
     def init_source_image(self):
         im = Image.open(self.source_image_path)
