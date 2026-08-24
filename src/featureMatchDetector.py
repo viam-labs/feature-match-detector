@@ -7,7 +7,7 @@ from typing import Any, Final, List, Mapping, Optional, Union
 from PIL import Image
 
 from viam.proto.service.vision import Detection
-from viam.resource.types import RESOURCE_NAMESPACE_RDK, RESOURCE_TYPE_SERVICE, Subtype
+from viam.resource.types import RESOURCE_NAMESPACE_RDK, RESOURCE_TYPE_SERVICE
 from viam.utils import ValueTypes
 
 from viam.media.video import CameraMimeType
