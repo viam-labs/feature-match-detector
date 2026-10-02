@@ -29,8 +29,13 @@ from viam.services.vision import CaptureAllResult, Vision
 from viam.utils import ValueTypes, struct_to_dict
 
 DETECTOR = cv2.SIFT_create()
-MATCHER = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
+MATCHER = cv2.BFMatcher(cv2.NORM_L2)
+CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 LOGGER = getLogger(__name__)
+LOWE_RATIO = 0.7
+MIN_INLIER_RATIO = 0.4
+MIN_HOMOGRAPHY_POINTS = 4
+GRACE_FRAMES = 2
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
 REMOTE_SCHEMES = {"http", "https"}
@@ -58,6 +63,8 @@ class featureMatchDetector(Vision):
         self.dependencies: Mapping[ResourceName, ResourceBase] = {}
         self.source_keypoints = None
         self.source_descriptors = None
+        self.source_shape: Optional[Tuple[int, int]] = None
+        self._camera_grace: dict = {}
         self._source_lock = Lock()
 
     @classmethod
@@ -121,6 +128,8 @@ class featureMatchDetector(Vision):
             self.source_image_path = source
             self.source_keypoints = keypoints
             self.source_descriptors = descriptors
+            self.source_shape = gray.shape[:2]
+            self._camera_grace = {}
         LOGGER.info("Loaded reference image from %s (%s features)", path, len(keypoints))
 
     async def get_detections_from_camera(
@@ -130,7 +139,7 @@ class featureMatchDetector(Vision):
         extra: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> List[Detection]:
-        return await self.get_detections(await self.get_cam_image(camera_name), extra=extra, timeout=timeout)
+        return self._match_image(await self.get_cam_image(camera_name), camera_name)
 
     async def get_detections(
         self,
@@ -139,15 +148,22 @@ class featureMatchDetector(Vision):
         extra: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> List[Detection]:
+        return self._match_image(image)
+
+    def _match_image(self, image: ViamImage, camera_name: Optional[str] = None) -> List[Detection]:
         with self._source_lock:
             source_keypoints = self.source_keypoints
             source_descriptors = self.source_descriptors
-            min_good_matches = self.min_good_matches
+            source_shape = self.source_shape
+            minimum = self.min_good_matches
+            grace = self._camera_grace.get(camera_name, 0) if camera_name else 0
+        if source_keypoints is None or source_descriptors is None or source_shape is None:
+            return self._remember(camera_name, [], False)
 
         query_gray = _viam_image_to_gray(image)
         keypoints, descriptors = DETECTOR.detectAndCompute(query_gray, None)
         if keypoints is None or descriptors is None or len(descriptors) < 2:
-            return []
+            return self._remember(camera_name, [], False)
         descriptors = np.asarray(descriptors, dtype=np.float32)
 
         matches = MATCHER.knnMatch(source_descriptors, descriptors, 2)
@@ -156,30 +172,48 @@ class featureMatchDetector(Vision):
             if len(pair) < 2:
                 continue
             first, second = pair
-            if first.distance < 0.7 * second.distance:
+            if first.distance < LOWE_RATIO * second.distance:
                 good.append(first)
+        if len(good) < MIN_HOMOGRAPHY_POINTS:
+            return self._remember(camera_name, [], False)
 
-        detections = []
-        if len(good) >= min_good_matches:
-            src_pts = np.float32([source_keypoints[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-            dst_pts = np.float32([keypoints[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-            _homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-            if mask is not None:
-                pts = dst_pts[mask == 1]
-                if len(pts):
-                    min_x, min_y = np.int32(pts.min(axis=0))
-                    max_x, max_y = np.int32(pts.max(axis=0))
-                    confidence = min(len(good) / 40, 1)
-                    detections.append(
-                        Detection(
-                            x_min=int(min_x),
-                            y_min=int(min_y),
-                            x_max=int(max_x),
-                            y_max=int(max_y),
-                            confidence=float(confidence),
-                            class_name="match",
-                        )
-                    )
+        src_pts = np.float32([source_keypoints[match.queryIdx].pt for match in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([keypoints[match.trainIdx].pt for match in good]).reshape(-1, 1, 2)
+        homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0, None, 5000, 0.999)
+        if homography is None or mask is None or not np.isfinite(homography).all():
+            return self._remember(camera_name, [], False)
+        inliers = int(mask.ravel().sum())
+        accepted, strict = _match_decision(inliers, len(good), minimum, grace)
+        if not accepted:
+            return self._remember(camera_name, [], False)
+        box = _box_from_homography(homography, source_shape, query_gray.shape[:2])
+        if box is None:
+            return self._remember(camera_name, [], False)
+        min_x, min_y, max_x, max_y = box
+        detection = Detection(
+            x_min=min_x,
+            y_min=min_y,
+            x_max=max_x,
+            y_max=max_y,
+            confidence=float(min(inliers / 40, 1)),
+            class_name="match",
+        )
+        return self._remember(camera_name, [detection], strict)
+
+    def _remember(self, camera_name: Optional[str], detections: List[Detection], strict: bool) -> List[Detection]:
+        if camera_name is None:
+            return detections
+        with self._source_lock:
+            if detections and strict:
+                self._camera_grace[camera_name] = GRACE_FRAMES
+            elif detections:
+                remaining = self._camera_grace.get(camera_name, 0) - 1
+                if remaining > 0:
+                    self._camera_grace[camera_name] = remaining
+                else:
+                    self._camera_grace.pop(camera_name, None)
+            else:
+                self._camera_grace.pop(camera_name, None)
         return detections
 
     async def do_command(
@@ -237,7 +271,7 @@ class featureMatchDetector(Vision):
             if return_image:
                 result.image = image
             if return_detections:
-                result.detections = await self.get_detections(image, extra=extra, timeout=timeout)
+                result.detections = self._match_image(image, camera_name)
         return result
 
     async def get_properties(
@@ -437,6 +471,43 @@ def _svg_bytes_to_pil(data: bytes) -> Image.Image:
         document.close()
 
 
+def _match_decision(inliers: int, good_count: int, minimum: int, grace: int) -> Tuple[bool, bool]:
+    """Return whether the homography is a match, and whether it cleared the full inlier bar."""
+    if good_count <= 0 or inliers < MIN_HOMOGRAPHY_POINTS:
+        return False, False
+    if inliers / good_count < MIN_INLIER_RATIO:
+        return False, False
+    if inliers >= max(MIN_HOMOGRAPHY_POINTS, minimum):
+        return True, True
+    relaxed = max(MIN_HOMOGRAPHY_POINTS, minimum // 2)
+    if grace > 0 and inliers >= relaxed:
+        return True, False
+    return False, False
+
+
+def _box_from_homography(
+    homography: np.ndarray, source_shape: Tuple[int, int], query_shape: Tuple[int, int]
+) -> Optional[Tuple[int, int, int, int]]:
+    height, width = source_shape
+    corners = np.float32([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]).reshape(-1, 1, 2)
+    projected = cv2.perspectiveTransform(corners, homography)
+    if projected is None or not np.isfinite(projected).all():
+        return None
+    query_height, query_width = query_shape
+    min_x = int(np.floor(projected[:, 0, 0].min()))
+    min_y = int(np.floor(projected[:, 0, 1].min()))
+    max_x = int(np.ceil(projected[:, 0, 0].max()))
+    max_y = int(np.ceil(projected[:, 0, 1].max()))
+    min_x = max(0, min(min_x, query_width - 1))
+    min_y = max(0, min(min_y, query_height - 1))
+    max_x = max(0, min(max_x, query_width))
+    max_y = max(0, min(max_y, query_height))
+    if max_x - min_x < 2 or max_y - min_y < 2:
+        return None
+    return min_x, min_y, max_x, max_y
+
+
 def _pil_to_gray(image: Image.Image) -> np.ndarray:
     rgb = np.array(image.convert("RGB"))
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    return CLAHE.apply(gray)

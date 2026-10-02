@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from viam.components.camera import Camera
 from viam.media.video import CameraMimeType, ViamImage
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.service.vision import Detection
@@ -267,6 +268,52 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         self.assertEqual(detector.source_image_path, str(self.svg_path))
         detections = asyncio.run(detector.get_detections(ViamImage(self.svg_png, CameraMimeType.PNG)))
         self.assertEqual(len(detections), 1)
+
+    def test_self_match_box_is_stable_and_covers_the_image(self):
+        detector = featureMatchDetector.new(config_for(source_image_path=str(self.png_path), min_good_matches=8), {})
+        image = ViamImage(self.png_bytes, CameraMimeType.PNG)
+        first = asyncio.run(detector.get_detections(image))[0]
+        second = asyncio.run(detector.get_detections(image))[0]
+        self.assertEqual(detector._camera_grace, {})
+        self.assertEqual((first.x_min, first.y_min, first.x_max, first.y_max), (second.x_min, second.y_min, second.x_max, second.y_max))
+        self.assertLessEqual(first.x_min, 15)
+        self.assertLessEqual(first.y_min, 15)
+        self.assertGreaterEqual(first.x_max, 305)
+        self.assertGreaterEqual(first.y_max, 225)
+
+    def test_camera_grace_holds_then_clears(self):
+        image = ViamImage(self.png_bytes, CameraMimeType.PNG)
+
+        class ImageCamera:
+            def __init__(self):
+                self.image = image
+
+            async def get_images(self, **kwargs):
+                return [self.image], None
+
+        camera = ImageCamera()
+        detector = featureMatchDetector.new(
+            config_for(source_image_path=str(self.png_path), cameras=["cam"], min_good_matches=8),
+            {Camera.get_resource_name("cam"): camera},
+        )
+        self.assertEqual(len(asyncio.run(detector.get_detections_from_camera("cam"))), 1)
+        self.assertEqual(detector._camera_grace["cam"], fmd.GRACE_FRAMES)
+        detection = asyncio.run(detector.get_detections(image))[0]
+        detector._remember("cam", [detection], False)
+        self.assertEqual(detector._camera_grace["cam"], fmd.GRACE_FRAMES - 1)
+
+        blank = io.BytesIO()
+        Image.new("RGB", (80, 80), "white").save(blank, format="PNG")
+        camera.image = ViamImage(blank.getvalue(), CameraMimeType.PNG)
+        self.assertEqual(asyncio.run(detector.get_detections_from_camera("cam")), [])
+        self.assertNotIn("cam", detector._camera_grace)
+
+    def test_match_decision(self):
+        self.assertEqual(fmd._match_decision(20, 30, 15, 0), (True, True))
+        self.assertEqual(fmd._match_decision(10, 20, 15, 0), (False, False))
+        self.assertEqual(fmd._match_decision(10, 20, 15, 2), (True, False))
+        self.assertEqual(fmd._match_decision(10, 100, 15, 2), (False, False))
+        self.assertEqual(fmd._match_decision(3, 4, 15, 2), (False, False))
 
     def test_store_reference_replaces_previous_suffix(self):
         uri = "https://example.com/reference"

@@ -27,7 +27,7 @@ The following attributes are available for `rdk:service:vision:feature-match-det
 | ------------------- | ---------------- | --------------------------------- | ----------- |
 | `source_image_path` | string           | Required                          | Local filesystem path, or a `file://`, `http://`, or `https://` URI, for the reference image. Remote URIs are downloaded on first use and then read from the module's `.cache` directory. JPEG, PNG, and SVG (including SVGZ) are supported. |
 | `cameras`           | array of strings | Required for camera methods       | Names of cameras `get_detections_from_camera` and `capture_all_from_camera` may use. Each name is added as an implicit dependency. The first entry is reported as the default camera. |
-| `min_good_matches`  | integer          | Optional                          | The minimum number of "good" keypoint matches (default: 15) |
+| `min_good_matches`  | integer          | Optional                          | The minimum number of homography inliers required to report a match (default: 15). After a camera reports a match, the next two frames from that camera may pass with about half this count. |
 
 ### Example Configuration
 
@@ -67,6 +67,8 @@ The `feature-match-detector` service provides the following methods from Viam's 
 ### `get_detections_from_camera(camera_name=*string*)`
 
 `camera_name` must be one of the names in the `cameras` array. Those cameras are implicit dependencies, so they do not also need to be listed in `depends_on`.
+
+Frames are contrast-normalized before matching, and the detection box is the reference image projected into the camera frame. A camera that has just matched can keep that match for the next two frames when the inlier count dips to about half of `min_good_matches`.
 
 ### `do_command({"set":[{"key":"value"}]})`
 
