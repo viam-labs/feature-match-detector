@@ -1,5 +1,6 @@
-viam-sdk~=0.79.1
+viam-sdk~=0.83.1
 numpy
 opencv-python
 pillow
 opencv-contrib-python
+pymupdf

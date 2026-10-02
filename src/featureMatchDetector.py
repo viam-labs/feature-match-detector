@@ -1,100 +1,137 @@
+import gzip
+import hashlib
+import io
+import urllib.request
+from urllib.error import HTTPError
 from datetime import datetime
-from typing import ClassVar, Mapping, Sequence, Any, Dict, Optional, Tuple, Final, List, cast
+from pathlib import Path
+from threading import Lock
+from typing import Any, ClassVar, List, Mapping, Optional, Sequence, Tuple, cast
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
+
+import cv2
+import numpy as np
+import pymupdf
+from PIL import Image
 from typing_extensions import Self
 
-from typing import Any, Final, List, Mapping, Optional, Union
-
-from PIL import Image
-
-from viam.proto.service.vision import Detection
-from viam.resource.types import RESOURCE_NAMESPACE_RDK, RESOURCE_TYPE_SERVICE
-from viam.utils import ValueTypes
-
-from viam.media.video import CameraMimeType
-from viam.module.types import Reconfigurable
+from viam.components.camera import Camera
+from viam.logging import getLogger
+from viam.media.utils.pil import viam_to_pil_image
+from viam.media.video import CameraMimeType, ViamImage
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import ResourceName
+from viam.proto.service.vision import Detection, GetPropertiesResponse
 from viam.resource.base import ResourceBase
 from viam.resource.types import Model, ModelFamily
-
-from viam.services.vision import Vision, CaptureAllResult
-from viam.proto.service.vision import GetPropertiesResponse
-from viam.components.camera import Camera, ViamImage
-from viam.media.utils.pil import viam_to_pil_image
-
-from viam.logging import getLogger
-
-import asyncio
-import numpy as np
-import cv2
-
-from pathlib import Path
+from viam.services.vision import CaptureAllResult, Vision
+from viam.utils import ValueTypes, struct_to_dict
 
 DETECTOR = cv2.SIFT_create()
 MATCHER = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
 LOGGER = getLogger(__name__)
 
-class featureMatchDetector(Vision, Reconfigurable):
-    
-    MODEL: ClassVar[Model] = Model(ModelFamily("viam-labs", "detector"), "feature-match-detector")
-    
-    source_image_path: str
-    source_keypoints: dict
-    source_descriptors: dict
+CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
+REMOTE_SCHEMES = {"http", "https"}
+RASTER_MIME_TYPES = (CameraMimeType.JPEG, CameraMimeType.PNG, CameraMimeType.VIAM_RGBA)
+CONTENT_TYPE_SUFFIX = {
+    "image/svg+xml": ".svg",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+}
+KNOWN_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".svg", ".svgz"}
 
-    # Constructor
+
+class featureMatchDetector(Vision):
+    MODEL: ClassVar[Model] = Model(ModelFamily("viam-labs", "detector"), "feature-match-detector")
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.source_image_path = ""
+        self.cameras: List[str] = []
+        self.min_good_matches = 15
+        self.dependencies: Mapping[ResourceName, ResourceBase] = {}
+        self.source_keypoints = None
+        self.source_descriptors = None
+        self._source_lock = Lock()
+
     @classmethod
     def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
-        my_class = cls(config.name)
-        my_class.reconfigure(config, dependencies)
-        return my_class
+        detector = cls(config.name)
+        detector.reconfigure(config, dependencies)
+        return detector
 
-    # Validates JSON Configuration
     @classmethod
-    def validate(cls, config: ComponentConfig):
-        source_image_path = config.attributes.fields["source_image_path"].string_value
-        if source_image_path == "":
-            raise Exception("A source_image_path must be defined")
-        if not Path(source_image_path).exists():
-            raise Exception("Invalid source_image_path: " + source_image_path)
-        return
-        
-    # Handles attribute reconfiguration
-    def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
-        self.source_image_path = config.attributes.fields["source_image_path"].string_value
-        self.init_source_image()
-        self.min_good_matches = config.attributes.fields["min_good_matches"].number_value or 15
-        self.DEPS = dependencies
-        return
+    def validate_config(cls, config: ComponentConfig) -> Tuple[Sequence[str], Sequence[str]]:
+        attrs = _attributes(config)
+        _validate_source(str(attrs.get("source_image_path", "")))
+        _min_good_matches(attrs.get("min_good_matches"))
+        return _configured_cameras(attrs.get("cameras")), []
 
-    async def get_cam_image(
-        self,
-        camera_name: str
-    ) -> ViamImage:
-        actual_cam = self.DEPS[Camera.get_resource_name(camera_name)]
-        cam = cast(Camera, actual_cam)
+    def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
+        attrs = _attributes(config)
+        self.cameras = list(_configured_cameras(attrs.get("cameras")))
+        self.min_good_matches = _min_good_matches(attrs.get("min_good_matches"))
+        self.dependencies = dependencies
+        self._load_reference(str(attrs.get("source_image_path", "")))
+
+    async def get_cam_image(self, camera_name: str) -> ViamImage:
+        if camera_name not in self.cameras:
+            configured = ", ".join(self.cameras) if self.cameras else "(none)"
+            raise Exception(
+                f"Camera '{camera_name}' is not in the configured cameras array. Configured cameras: {configured}"
+            )
+        resource_name = Camera.get_resource_name(camera_name)
+        if resource_name not in self.dependencies:
+            raise Exception(f"Camera '{camera_name}' is not available as a dependency")
+        cam = cast(Camera, self.dependencies[resource_name])
         images, _ = await cam.get_images()
         if not images:
-            raise Exception("get_images from cam returned no images")
-        for img in images:
-            if img.mime_type == CameraMimeType.JPEG:
-                return img
-        raise Exception(f"no images from cam is {CameraMimeType.JPEG}")
-    
-    def init_source_image(self):
-        im = Image.open(self.source_image_path)
-        imgTrainGray = cv2.cvtColor(np.array(im), cv2.COLOR_BGR2GRAY)
-        kp1, des1 = DETECTOR.detectAndCompute(imgTrainGray,None)
-        self.source_keypoints = kp1
-        self.source_descriptors = des1
-        return
-    
-    async def get_detections_from_camera(
-        self, camera_name: str, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None
-    ) -> List[Detection]:
-        return await self.get_detections(await self.get_cam_image(camera_name))
+            raise Exception(f"Camera '{camera_name}' returned no images")
+        for mime_type in RASTER_MIME_TYPES:
+            for img in images:
+                if img.mime_type == mime_type:
+                    return img
+        raise Exception(f"Camera '{camera_name}' did not return a JPEG, PNG, or RGBA image")
 
-    
+    def _load_reference(self, source: str, *, refresh: bool = False):
+        pending_cache = None
+        if refresh:
+            _require_remote_source(source)
+            data, content_type = _fetch_reference(source)
+            gray = _bytes_to_gray(data, _suffix_for_image(source, content_type, data))
+            pending_cache = (data, content_type)
+            path = None
+        else:
+            path = resolve_reference_image(source)
+            gray = _path_to_gray(path)
+        keypoints, descriptors = DETECTOR.detectAndCompute(gray, None)
+        if descriptors is not None:
+            descriptors = np.asarray(descriptors, dtype=np.float32)
+        if keypoints is None or descriptors is None or len(descriptors) < 2:
+            raise Exception(f"Reference image '{source}' does not contain enough features to match")
+        if pending_cache is not None:
+            path = _store_reference_bytes(source, pending_cache[0], pending_cache[1])
+        with self._source_lock:
+            self.source_image_path = source
+            self.source_keypoints = keypoints
+            self.source_descriptors = descriptors
+        LOGGER.info("Loaded reference image from %s (%s features)", path, len(keypoints))
+
+    async def get_detections_from_camera(
+        self,
+        camera_name: str,
+        *,
+        extra: Optional[Mapping[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> List[Detection]:
+        return await self.get_detections(await self.get_cam_image(camera_name), extra=extra, timeout=timeout)
+
     async def get_detections(
         self,
         image: ViamImage,
@@ -102,58 +139,87 @@ class featureMatchDetector(Vision, Reconfigurable):
         extra: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> List[Detection]:
-        detections = []
-        imgTrainGray = cv2.cvtColor(np.array(viam_to_pil_image(image)), cv2.COLOR_BGR2GRAY)
-        kp2, des2 = DETECTOR.detectAndCompute(imgTrainGray,None)
-        matches = MATCHER.knnMatch(self.source_descriptors,des2,2)
-        good = []
-        for m,n in matches:
-            if m.distance < .7 * n.distance:
-                good.append(m)
+        with self._source_lock:
+            source_keypoints = self.source_keypoints
+            source_descriptors = self.source_descriptors
+            min_good_matches = self.min_good_matches
 
-        if len(good) >= self.min_good_matches:
-            src_pts = np.float32([ self.source_keypoints[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
-            dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
-            M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
-            pts = dst_pts[mask==1]
-            if len(pts):
-                min_x, min_y = np.int32(pts.min(axis=0))
-                max_x, max_y = np.int32(pts.max(axis=0))
-                confidence = len(good) / 40
-                if confidence > 1:
-                    confidence = 1
-                detections.append({ "confidence": confidence, "class_name": "match", "x_min": min_x, "y_min": min_y, 
-                                        "x_max": max_x, "y_max": max_y } )
+        query_gray = _viam_image_to_gray(image)
+        keypoints, descriptors = DETECTOR.detectAndCompute(query_gray, None)
+        if keypoints is None or descriptors is None or len(descriptors) < 2:
+            return []
+        descriptors = np.asarray(descriptors, dtype=np.float32)
+
+        matches = MATCHER.knnMatch(source_descriptors, descriptors, 2)
+        good = []
+        for pair in matches:
+            if len(pair) < 2:
+                continue
+            first, second = pair
+            if first.distance < 0.7 * second.distance:
+                good.append(first)
+
+        detections = []
+        if len(good) >= min_good_matches:
+            src_pts = np.float32([source_keypoints[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+            dst_pts = np.float32([keypoints[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+            _homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+            if mask is not None:
+                pts = dst_pts[mask == 1]
+                if len(pts):
+                    min_x, min_y = np.int32(pts.min(axis=0))
+                    max_x, max_y = np.int32(pts.max(axis=0))
+                    confidence = min(len(good) / 40, 1)
+                    detections.append(
+                        Detection(
+                            x_min=int(min_x),
+                            y_min=int(min_y),
+                            x_max=int(max_x),
+                            y_max=int(max_y),
+                            confidence=float(confidence),
+                            class_name="match",
+                        )
+                    )
         return detections
 
-    # Implements set=[{key=,value=}] to allow for config changes on the fly
-    async def do_command(self, input: Mapping[str, ValueTypes], *,
-                         timeout: Optional[float] = None,
-                         **kwargs) -> Mapping[str, ValueTypes]:
-        LOGGER.info(input)
-        resp = {
-            "response": "OK",
-            "timestamp": str(datetime.now())
-        }
-        if "set" in input.keys():
-            for s in input["set"]:
-                if "key" in s.keys():
-                    if s["key"] == "source_image_path":
-                        self.source_image_path = s["value"]
-                        self.init_source_image()
-                    if s["key"] == "min_good_matches":
-                        self.min_good_matches = s["value"]
-        return resp
-    
-    async def get_classifications(self):
-        return
-    
-    async def get_classifications_from_camera(self):
-        return
-    
-    async def get_object_point_clouds(self):
-        return
-    
+    async def do_command(
+        self,
+        command: Mapping[str, ValueTypes],
+        *,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> Mapping[str, ValueTypes]:
+        LOGGER.info(command)
+        if "set" in command.keys():
+            for item in command["set"]:
+                if "key" not in item.keys():
+                    continue
+                if item["key"] == "source_image_path":
+                    self._load_reference(str(item["value"]))
+                if item["key"] == "min_good_matches":
+                    self.min_good_matches = _min_good_matches(item["value"])
+        response: dict = {"response": "OK", "timestamp": str(datetime.now())}
+        if "refetch_reference" in command and command["refetch_reference"] is not False:
+            refetch = command["refetch_reference"]
+            if refetch is True:
+                source = self.source_image_path
+            elif isinstance(refetch, str) and refetch != "":
+                source = refetch
+            else:
+                raise Exception("refetch_reference must be true or an http(s) URL")
+            self._load_reference(source, refresh=True)
+            response["source_image_path"] = self.source_image_path
+        return response
+
+    async def get_classifications(self, image: ViamImage, count: int, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support classifications")
+
+    async def get_classifications_from_camera(self, camera_name: str, count: int, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support classifications")
+
+    async def get_object_point_clouds(self, camera_name: str, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support object point clouds")
+
     async def capture_all_from_camera(
         self,
         camera_name: str,
@@ -166,8 +232,12 @@ class featureMatchDetector(Vision, Reconfigurable):
         timeout: Optional[float] = None,
     ) -> CaptureAllResult:
         result = CaptureAllResult()
-        result.image = await self.get_cam_image(camera_name)
-        result.detections = await self.get_detections(result.image)
+        if return_image or return_detections:
+            image = await self.get_cam_image(camera_name)
+            if return_image:
+                result.image = image
+            if return_detections:
+                result.detections = await self.get_detections(image, extra=extra, timeout=timeout)
         return result
 
     async def get_properties(
@@ -176,8 +246,197 @@ class featureMatchDetector(Vision, Reconfigurable):
         extra: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> GetPropertiesResponse:
-        return GetPropertiesResponse(
+        properties = GetPropertiesResponse(
             classifications_supported=False,
             detections_supported=True,
-            object_point_clouds_supported=False
+            object_point_clouds_supported=False,
         )
+        if self.cameras:
+            properties.default_camera = self.cameras[0]
+        return properties
+
+
+def _attributes(config: ComponentConfig) -> dict:
+    return struct_to_dict(config.attributes)
+
+
+def _configured_cameras(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise Exception("cameras must be an array of camera name strings")
+    cameras = []
+    for camera in value:
+        if not isinstance(camera, str) or camera == "":
+            raise Exception("cameras must be an array of non-empty camera name strings")
+        if camera not in cameras:
+            cameras.append(camera)
+    return cameras
+
+
+def _min_good_matches(value: Any) -> int:
+    if value in (None, "", 0):
+        return 15
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise Exception("min_good_matches must be an integer") from exc
+    if parsed < 0:
+        raise Exception("min_good_matches must be greater than or equal to 0")
+    return parsed
+
+
+def _validate_source(source: str):
+    if source == "":
+        raise Exception("A source_image_path must be defined")
+    scheme = urlparse(source).scheme.lower()
+    if scheme in REMOTE_SCHEMES:
+        if urlparse(source).netloc == "":
+            raise Exception(f"Invalid source image URI: {source}")
+        return
+    if scheme == "file":
+        path = _file_uri_path(source)
+    elif scheme == "":
+        path = Path(source)
+    else:
+        raise Exception(
+            f"Unsupported source image URI scheme '{scheme}'. Use a local path, or a file://, http://, or https:// URI."
+        )
+    if not path.is_file():
+        raise Exception(f"Invalid source_image_path: {source}")
+
+
+def _require_remote_source(source: str):
+    scheme = urlparse(source).scheme.lower()
+    if scheme not in REMOTE_SCHEMES:
+        raise Exception("refetch_reference requires an http:// or https:// source_image_path")
+    _validate_source(source)
+
+
+def resolve_reference_image(source: str) -> Path:
+    """Return a local file for a filesystem path or URI. Remote URIs are cached after the first download."""
+    _validate_source(source)
+    scheme = urlparse(source).scheme.lower()
+    if scheme in REMOTE_SCHEMES:
+        return _download_reference(source)
+    if scheme == "file":
+        return _file_uri_path(source)
+    return Path(source)
+
+
+def _file_uri_path(source: str) -> Path:
+    return Path(url2pathname(unquote(urlparse(source).path)))
+
+
+def _download_reference(uri: str) -> Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(uri.encode("utf-8")).hexdigest()
+    cached = _cached_file(digest)
+    if cached is not None:
+        LOGGER.info("Using cached reference image %s", cached)
+        return cached
+    data, content_type = _fetch_reference(uri)
+    return _store_reference_bytes(uri, data, content_type)
+
+
+def _fetch_reference(uri: str) -> Tuple[bytes, str]:
+    LOGGER.info("Downloading reference image from %s", uri)
+    request = urllib.request.Request(uri, headers={"User-Agent": "feature-match-detector"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read()
+            content_type = response.headers.get_content_type()
+    except HTTPError as exc:
+        exc.close()
+        raise Exception(f"Failed to download reference image from {uri}: {exc}") from exc
+    except Exception as exc:
+        raise Exception(f"Failed to download reference image from {uri}: {exc}") from exc
+    if not data:
+        raise Exception(f"Reference image download from {uri} was empty")
+    return data, content_type
+
+
+def _store_reference_bytes(uri: str, data: bytes, content_type: str) -> Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(uri.encode("utf-8")).hexdigest()
+    destination = CACHE_DIR / f"{digest}{_suffix_for_image(uri, content_type, data)}"
+    temporary = CACHE_DIR / f".{digest}.partial"
+    try:
+        temporary.write_bytes(data)
+        temporary.replace(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    for old in CACHE_DIR.glob(f"{digest}.*"):
+        if old.is_file() and old.resolve() != destination.resolve():
+            old.unlink()
+    LOGGER.info("Cached reference image at %s", destination)
+    return destination
+
+
+def _cached_file(digest: str) -> Optional[Path]:
+    matches = sorted(path for path in CACHE_DIR.glob(f"{digest}.*") if path.is_file())
+    if not matches:
+        return None
+    return matches[0]
+
+
+def _suffix_for_image(uri: str, content_type: str, data: bytes) -> str:
+    if content_type == "image/svg+xml" or _looks_like_svg(data):
+        return ".svg"
+    if data[:2] == b"\x1f\x8b" and Path(urlparse(uri).path).suffix.lower() == ".svgz":
+        return ".svgz"
+    if content_type in CONTENT_TYPE_SUFFIX:
+        return CONTENT_TYPE_SUFFIX[content_type]
+    suffix = Path(urlparse(uri).path).suffix.lower()
+    if suffix in KNOWN_SUFFIXES:
+        return ".jpg" if suffix == ".jpeg" else suffix
+    return ".img"
+
+
+def _looks_like_svg(data: bytes) -> bool:
+    if data[:2] == b"\x1f\x8b":
+        return False
+    return b"<svg" in data[:4096].lstrip().lower()
+
+
+def _path_to_gray(path: Path) -> np.ndarray:
+    return _bytes_to_gray(path.read_bytes(), path.suffix)
+
+
+def _bytes_to_gray(data: bytes, suffix: str = "") -> np.ndarray:
+    if suffix.lower() == ".svgz":
+        data = gzip.decompress(data)
+    if suffix.lower() in {".svg", ".svgz"} or _looks_like_svg(data):
+        image = _svg_bytes_to_pil(data)
+    else:
+        image = Image.open(io.BytesIO(data))
+    return _pil_to_gray(image)
+
+
+def _viam_image_to_gray(image: ViamImage) -> np.ndarray:
+    if _looks_like_svg(image.data):
+        pil_image = _svg_bytes_to_pil(image.data)
+    else:
+        pil_image = viam_to_pil_image(image)
+    return _pil_to_gray(pil_image)
+
+
+def _svg_bytes_to_pil(data: bytes) -> Image.Image:
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    document = pymupdf.open(stream=data, filetype="svg")
+    try:
+        if document.page_count < 1:
+            raise Exception("SVG reference image did not contain a page")
+        pixmap = document[0].get_pixmap(dpi=144, alpha=False)
+        if pixmap.width == 0 or pixmap.height == 0:
+            raise Exception("SVG reference image rasterized to an empty image")
+        return Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+    finally:
+        document.close()
+
+
+def _pil_to_gray(image: Image.Image) -> np.ndarray:
+    rgb = np.array(image.convert("RGB"))
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)

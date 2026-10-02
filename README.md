@@ -14,6 +14,7 @@ On the new service panel, copy and paste the following attribute template into y
 ```json
 {
   "source_image_path": "<string>",
+  "cameras": ["<camera name>"],
   "min_good_matches": <integer>
 }
 ```
@@ -22,17 +23,30 @@ On the new service panel, copy and paste the following attribute template into y
 
 The following attributes are available for `rdk:service:vision:feature-match-detector` services:
 
-| Name                | Type    | Inclusion | Description |
-| ------------------- | ------- | --------- | ----------- |
-| `source_image_path` | string  | Required  | The path to the reference image to which other images will be matched against |
-| `min_good_matches`  | integer | Optional  | The minimum number of "good" keypoint matches (default: 15) |
+| Name                | Type             | Inclusion                         | Description |
+| ------------------- | ---------------- | --------------------------------- | ----------- |
+| `source_image_path` | string           | Required                          | Local filesystem path, or a `file://`, `http://`, or `https://` URI, for the reference image. Remote URIs are downloaded on first use and then read from the module's `.cache` directory. JPEG, PNG, and SVG (including SVGZ) are supported. |
+| `cameras`           | array of strings | Required for camera methods       | Names of cameras `get_detections_from_camera` and `capture_all_from_camera` may use. Each name is added as an implicit dependency. The first entry is reported as the default camera. |
+| `min_good_matches`  | integer          | Optional                          | The minimum number of "good" keypoint matches (default: 15) |
 
 ### Example Configuration
+
+Local reference image:
 
 ```json
 {
   "source_image_path": "/path/to/your_reference_image.jpg",
+  "cameras": ["cam"],
   "min_good_matches": 20
+}
+```
+
+Remote reference image (downloaded once, then cached):
+
+```json
+{
+  "source_image_path": "https://example.com/reference.svg",
+  "cameras": ["cam"]
 }
 ```
 
@@ -52,15 +66,7 @@ The `feature-match-detector` service provides the following methods from Viam's 
 
 ### `get_detections_from_camera(camera_name=*string*)`
 
-Note: If using this method, any cameras you are using must be set in the `depends_on` array for the service configuration:
-
-```json
-{
-  "depends_on": [
-    "cam"
-  ]
-}
-```
+`camera_name` must be one of the names in the `cameras` array. Those cameras are implicit dependencies, so they do not also need to be listed in `depends_on`.
 
 ### `do_command({"set":[{"key":"value"}]})`
 
@@ -71,8 +77,24 @@ You can re-configure this resource on the fly by passing a "set" object to do_co
   "set": [
     {
       "key": "source_image_path",
-      "value": "/path/to/refImage.png"
+      "value": "https://example.com/refImage.svg"
     }
   ]
 }
 ```
+
+`source_image_path` accepts a local path or a `file://`, `http://`, or `https://` URI. A remote URI that was already downloaded is read from disk.
+
+To download the current remote reference again and replace the cached file:
+
+```json
+{ "refetch_reference": true }
+```
+
+You can also pass a URL. That URL is downloaded, cached, and becomes the reference image:
+
+```json
+{ "refetch_reference": "https://example.com/refImage.svg" }
+```
+
+`refetch_reference` only applies to `http://` and `https://` URIs. The previous cache and loaded features stay in place if the download fails or the new image does not contain enough features.

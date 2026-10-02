@@ -1,11 +1,12 @@
 import asyncio
 import os
-from PIL import Image
+from pathlib import Path
 
 from viam import logging
+from viam.media.video import CameraMimeType, ViamImage
 from viam.robot.client import RobotClient
-from viam.services.vision import VisionClient
 from viam.rpc.dial import Credentials, DialOptions
+from viam.services.vision import VisionClient
 
 # these must be set, you can get them from your robot's 'CODE SAMPLE' tab
 robot_secret = os.getenv('ROBOT_SECRET') or ''
@@ -25,8 +26,8 @@ async def main():
 
     fd = VisionClient.from_robot(robot, name="feature_match_detector")
 
-    im = Image.open(r"./test/robot_head_2.jpg") 
-    detections = await fd.get_detections(im)
+    image_bytes = Path("./test/robot_head_2.jpg").read_bytes()
+    detections = await fd.get_detections(ViamImage(image_bytes, CameraMimeType.JPEG))
     print(detections)
     
     await robot.close()

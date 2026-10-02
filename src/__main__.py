@@ -10,7 +10,7 @@ async def main():
     Resources must be pre-registered. For an example, see the `__init__.py` file.
     """
     module = Module.from_args()
-    module.add_model_from_registry(Vision.SUBTYPE, featureMatchDetector.MODEL)
+    module.add_model_from_registry(Vision.API, featureMatchDetector.MODEL)
     await module.start()
 
 if __name__ == "__main__":
