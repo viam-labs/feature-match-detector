@@ -1,6 +1,7 @@
 import gzip
 import hashlib
 import io
+import time
 import urllib.request
 from urllib.error import HTTPError
 from datetime import datetime
@@ -36,6 +37,7 @@ LOWE_RATIO = 0.7
 MIN_INLIER_RATIO = 0.4
 MIN_HOMOGRAPHY_POINTS = 4
 GRACE_FRAMES = 2
+DEFAULT_DETECTION_HOLD_SECONDS = 5.0
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
 REMOTE_SCHEMES = {"http", "https"}
@@ -60,11 +62,14 @@ class featureMatchDetector(Vision):
         self.source_image_path = ""
         self.cameras: List[str] = []
         self.min_good_matches = 15
+        self.detection_hold_seconds = DEFAULT_DETECTION_HOLD_SECONDS
         self.dependencies: Mapping[ResourceName, ResourceBase] = {}
         self.source_keypoints = None
         self.source_descriptors = None
         self.source_shape: Optional[Tuple[int, int]] = None
         self._camera_grace: dict = {}
+        self._held_detections: dict = {}
+        self._clock = time.monotonic
         self._source_lock = Lock()
 
     @classmethod
@@ -78,12 +83,14 @@ class featureMatchDetector(Vision):
         attrs = _attributes(config)
         _validate_source(str(attrs.get("source_image_path", "")))
         _min_good_matches(attrs.get("min_good_matches"))
+        _detection_hold_seconds(attrs.get("detection_hold_seconds"))
         return _configured_cameras(attrs.get("cameras")), []
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         attrs = _attributes(config)
         self.cameras = list(_configured_cameras(attrs.get("cameras")))
         self.min_good_matches = _min_good_matches(attrs.get("min_good_matches"))
+        self.detection_hold_seconds = _detection_hold_seconds(attrs.get("detection_hold_seconds"))
         self.dependencies = dependencies
         self._load_reference(str(attrs.get("source_image_path", "")))
 
@@ -130,6 +137,7 @@ class featureMatchDetector(Vision):
             self.source_descriptors = descriptors
             self.source_shape = gray.shape[:2]
             self._camera_grace = {}
+            self._held_detections = {}
         LOGGER.info("Loaded reference image from %s (%s features)", path, len(keypoints))
 
     async def get_detections_from_camera(
@@ -203,6 +211,7 @@ class featureMatchDetector(Vision):
     def _remember(self, camera_name: Optional[str], detections: List[Detection], strict: bool) -> List[Detection]:
         if camera_name is None:
             return detections
+        now = self._clock()
         with self._source_lock:
             if detections and strict:
                 self._camera_grace[camera_name] = GRACE_FRAMES
@@ -214,7 +223,14 @@ class featureMatchDetector(Vision):
                     self._camera_grace.pop(camera_name, None)
             else:
                 self._camera_grace.pop(camera_name, None)
-        return detections
+            if detections:
+                self._held_detections[camera_name] = (detections, now + self.detection_hold_seconds)
+                return detections
+            held = self._held_detections.get(camera_name)
+            if held is not None and self.detection_hold_seconds > 0 and now < held[1]:
+                return held[0]
+            self._held_detections.pop(camera_name, None)
+        return []
 
     async def do_command(
         self,
@@ -232,6 +248,8 @@ class featureMatchDetector(Vision):
                     self._load_reference(str(item["value"]))
                 if item["key"] == "min_good_matches":
                     self.min_good_matches = _min_good_matches(item["value"])
+                if item["key"] == "detection_hold_seconds":
+                    self.detection_hold_seconds = _detection_hold_seconds(item["value"])
         response: dict = {"response": "OK", "timestamp": str(datetime.now())}
         if "refetch_reference" in command and command["refetch_reference"] is not False:
             refetch = command["refetch_reference"]
@@ -306,6 +324,18 @@ def _configured_cameras(value: Any) -> List[str]:
         if camera not in cameras:
             cameras.append(camera)
     return cameras
+
+
+def _detection_hold_seconds(value: Any) -> float:
+    if value in (None, ""):
+        return DEFAULT_DETECTION_HOLD_SECONDS
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise Exception("detection_hold_seconds must be a number") from exc
+    if parsed < 0:
+        raise Exception("detection_hold_seconds must be greater than or equal to 0")
+    return parsed
 
 
 def _min_good_matches(value: Any) -> int:

@@ -149,6 +149,8 @@ class FeatureMatchDetectorTest(unittest.TestCase):
             featureMatchDetector.validate_config(config_for(source_image_path="ftp://example.com/a.jpg"))
         with self.assertRaises(Exception):
             featureMatchDetector.validate_config(config_for(source_image_path=str(self.png_path), cameras="cam"))
+        with self.assertRaises(Exception):
+            featureMatchDetector.validate_config(config_for(source_image_path=str(self.png_path), detection_hold_seconds=-1))
 
     def test_local_png_and_file_uri_match(self):
         detector = featureMatchDetector.new(
@@ -296,7 +298,11 @@ class FeatureMatchDetectorTest(unittest.TestCase):
             config_for(source_image_path=str(self.png_path), cameras=["cam"], min_good_matches=8),
             {Camera.get_resource_name("cam"): camera},
         )
-        self.assertEqual(len(asyncio.run(detector.get_detections_from_camera("cam"))), 1)
+        now = {"t": 1_000.0}
+        detector._clock = lambda: now["t"]
+        detector.detection_hold_seconds = 5
+        held = asyncio.run(detector.get_detections_from_camera("cam"))
+        self.assertEqual(len(held), 1)
         self.assertEqual(detector._camera_grace["cam"], fmd.GRACE_FRAMES)
         detection = asyncio.run(detector.get_detections(image))[0]
         detector._remember("cam", [detection], False)
@@ -305,8 +311,19 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         blank = io.BytesIO()
         Image.new("RGB", (80, 80), "white").save(blank, format="PNG")
         camera.image = ViamImage(blank.getvalue(), CameraMimeType.PNG)
-        self.assertEqual(asyncio.run(detector.get_detections_from_camera("cam")), [])
+        now["t"] = 1_002.0
+        repeated = asyncio.run(detector.get_detections_from_camera("cam"))
+        self.assertEqual(len(repeated), 1)
+        self.assertEqual((repeated[0].x_min, repeated[0].y_min, repeated[0].x_max, repeated[0].y_max), (held[0].x_min, held[0].y_min, held[0].x_max, held[0].y_max))
         self.assertNotIn("cam", detector._camera_grace)
+
+        now["t"] = 1_006.0
+        self.assertEqual(asyncio.run(detector.get_detections_from_camera("cam")), [])
+        self.assertNotIn("cam", detector._held_detections)
+
+        one_shot = asyncio.run(detector.get_detections(image))
+        self.assertEqual(len(one_shot), 1)
+        self.assertEqual(detector._held_detections, {})
 
     def test_match_decision(self):
         self.assertEqual(fmd._match_decision(20, 30, 15, 0), (True, True))
