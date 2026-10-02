@@ -29,7 +29,7 @@ The following attributes are available for `rdk:service:vision:feature-match-det
 | `source_image_path` | string           | Required                          | Local filesystem path, or a `file://`, `http://`, or `https://` URI, for the reference image. Remote URIs are downloaded on first use and then read from the module's `.cache` directory. JPEG, PNG, and SVG (including SVGZ) are supported. |
 | `cameras`           | array of strings | Required for camera methods       | Names of cameras `get_detections_from_camera` and `capture_all_from_camera` may use. Each name is added as an implicit dependency. The first entry is reported as the default camera. |
 | `min_good_matches`  | integer          | Optional                          | The minimum number of homography inliers required to report a match (default: 15). For the next two frames after a match, that camera may pass with about half this count. |
-| `detection_hold_seconds` | number    | Optional                          | How long a camera keeps reporting its last match when later frames miss (default: 5). Set to 0 to drop the match on the first miss. |
+| `detection_hold_seconds` | number    | Optional                          | How long a camera keeps following its last match when later frames miss the feature check (default: 5). The box moves with the tracked object. Set to 0 to drop the match on the first miss. |
 
 ### Example Configuration
 
@@ -70,7 +70,7 @@ The `feature-match-detector` service provides the following methods from Viam's 
 
 `camera_name` must be one of the names in the `cameras` array. Those cameras are implicit dependencies, so they do not also need to be listed in `depends_on`.
 
-Frames are contrast-normalized before matching, and the detection box is the reference image projected into the camera frame. After a match, that camera keeps reporting the last box for `detection_hold_seconds` (default 5) while later frames miss, so a short gap does not clear the detection.
+Frames are contrast-normalized before matching, and the detection box is the reference image projected into the camera frame. After a match, that camera follows those points for `detection_hold_seconds` (default 5) when later frames miss the feature check, so the box stays on the object while it moves. The detection drops when the points can no longer be followed, or when the hold expires.
 
 ### `do_command({"set":[{"key":"value"}]})`
 

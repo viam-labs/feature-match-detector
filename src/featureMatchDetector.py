@@ -36,6 +36,8 @@ LOGGER = getLogger(__name__)
 LOWE_RATIO = 0.7
 MIN_INLIER_RATIO = 0.4
 MIN_HOMOGRAPHY_POINTS = 4
+MIN_TRACKED_FRACTION = 0.3
+TRACK_BACKTRACK_ERROR = 3.0
 GRACE_FRAMES = 2
 DEFAULT_DETECTION_HOLD_SECONDS = 5.0
 
@@ -166,71 +168,104 @@ class featureMatchDetector(Vision):
             minimum = self.min_good_matches
             grace = self._camera_grace.get(camera_name, 0) if camera_name else 0
         if source_keypoints is None or source_descriptors is None or source_shape is None:
-            return self._remember(camera_name, [], False)
+            return []
 
         query_gray = _viam_image_to_gray(image)
         keypoints, descriptors = DETECTOR.detectAndCompute(query_gray, None)
-        if keypoints is None or descriptors is None or len(descriptors) < 2:
-            return self._remember(camera_name, [], False)
-        descriptors = np.asarray(descriptors, dtype=np.float32)
+        if keypoints is not None and descriptors is not None and len(descriptors) >= 2:
+            descriptors = np.asarray(descriptors, dtype=np.float32)
+            matches = MATCHER.knnMatch(source_descriptors, descriptors, 2)
+            good = []
+            for pair in matches:
+                if len(pair) < 2:
+                    continue
+                first, second = pair
+                if first.distance < LOWE_RATIO * second.distance:
+                    good.append(first)
+            if len(good) >= MIN_HOMOGRAPHY_POINTS:
+                src_pts = np.float32([source_keypoints[match.queryIdx].pt for match in good]).reshape(-1, 1, 2)
+                dst_pts = np.float32([keypoints[match.trainIdx].pt for match in good]).reshape(-1, 1, 2)
+                homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0, None, 5000, 0.999)
+                if homography is not None and mask is not None and np.isfinite(homography).all():
+                    inlier_mask = mask.ravel().astype(bool)
+                    inliers = int(inlier_mask.sum())
+                    accepted, strict = _match_decision(inliers, len(good), minimum, grace)
+                    box = _box_from_homography(homography, source_shape, query_gray.shape[:2]) if accepted else None
+                    if box is not None:
+                        detection = _detection_from_box(box, inliers)
+                        return self._remember_match(
+                            camera_name,
+                            detection,
+                            strict,
+                            src_pts[inlier_mask].copy(),
+                            dst_pts[inlier_mask].copy(),
+                            query_gray,
+                        )
+        return self._follow_hold(camera_name, query_gray, source_shape)
 
-        matches = MATCHER.knnMatch(source_descriptors, descriptors, 2)
-        good = []
-        for pair in matches:
-            if len(pair) < 2:
-                continue
-            first, second = pair
-            if first.distance < LOWE_RATIO * second.distance:
-                good.append(first)
-        if len(good) < MIN_HOMOGRAPHY_POINTS:
-            return self._remember(camera_name, [], False)
-
-        src_pts = np.float32([source_keypoints[match.queryIdx].pt for match in good]).reshape(-1, 1, 2)
-        dst_pts = np.float32([keypoints[match.trainIdx].pt for match in good]).reshape(-1, 1, 2)
-        homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0, None, 5000, 0.999)
-        if homography is None or mask is None or not np.isfinite(homography).all():
-            return self._remember(camera_name, [], False)
-        inliers = int(mask.ravel().sum())
-        accepted, strict = _match_decision(inliers, len(good), minimum, grace)
-        if not accepted:
-            return self._remember(camera_name, [], False)
-        box = _box_from_homography(homography, source_shape, query_gray.shape[:2])
-        if box is None:
-            return self._remember(camera_name, [], False)
-        min_x, min_y, max_x, max_y = box
-        detection = Detection(
-            x_min=min_x,
-            y_min=min_y,
-            x_max=max_x,
-            y_max=max_y,
-            confidence=float(min(inliers / 40, 1)),
-            class_name="match",
-        )
-        return self._remember(camera_name, [detection], strict)
-
-    def _remember(self, camera_name: Optional[str], detections: List[Detection], strict: bool) -> List[Detection]:
+    def _remember_match(
+        self,
+        camera_name: Optional[str],
+        detection: Detection,
+        strict: bool,
+        reference_points: np.ndarray,
+        scene_points: np.ndarray,
+        query_gray: np.ndarray,
+    ) -> List[Detection]:
         if camera_name is None:
-            return detections
+            return [detection]
         now = self._clock()
         with self._source_lock:
-            if detections and strict:
+            if strict:
                 self._camera_grace[camera_name] = GRACE_FRAMES
-            elif detections:
+            else:
                 remaining = self._camera_grace.get(camera_name, 0) - 1
                 if remaining > 0:
                     self._camera_grace[camera_name] = remaining
                 else:
                     self._camera_grace.pop(camera_name, None)
-            else:
-                self._camera_grace.pop(camera_name, None)
-            if detections:
-                self._held_detections[camera_name] = (detections, now + self.detection_hold_seconds)
-                return detections
+            self._held_detections[camera_name] = {
+                "expires_at": now + self.detection_hold_seconds,
+                "reference_points": reference_points,
+                "scene_points": scene_points,
+                "previous_gray": query_gray.copy(),
+                "anchor_count": len(scene_points),
+            }
+        return [detection]
+
+    def _follow_hold(
+        self, camera_name: Optional[str], query_gray: np.ndarray, source_shape: Optional[Tuple[int, int]]
+    ) -> List[Detection]:
+        if camera_name is None or self.detection_hold_seconds <= 0 or source_shape is None:
+            return []
+        now = self._clock()
+        with self._source_lock:
             held = self._held_detections.get(camera_name)
-            if held is not None and self.detection_hold_seconds > 0 and now < held[1]:
-                return held[0]
-            self._held_detections.pop(camera_name, None)
-        return []
+            if held is None or now >= held["expires_at"]:
+                self._held_detections.pop(camera_name, None)
+                self._camera_grace.pop(camera_name, None)
+                return []
+            previous_gray = held["previous_gray"]
+            scene_points = held["scene_points"]
+            reference_points = held["reference_points"]
+            anchor_count = held["anchor_count"]
+        tracked = _track_held_points(previous_gray, query_gray, reference_points, scene_points, anchor_count, source_shape)
+        if tracked is None:
+            with self._source_lock:
+                self._held_detections.pop(camera_name, None)
+                self._camera_grace.pop(camera_name, None)
+            return []
+        detection, reference_points, scene_points = tracked
+        with self._source_lock:
+            current = self._held_detections.get(camera_name)
+            if current is None or now >= current["expires_at"]:
+                self._held_detections.pop(camera_name, None)
+                return []
+            current["reference_points"] = reference_points
+            current["scene_points"] = scene_points
+            current["previous_gray"] = query_gray.copy()
+            self._camera_grace.pop(camera_name, None)
+        return [detection]
 
     async def do_command(
         self,
@@ -499,6 +534,61 @@ def _svg_bytes_to_pil(data: bytes) -> Image.Image:
         return Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
     finally:
         document.close()
+
+
+def _detection_from_box(box: Tuple[int, int, int, int], inliers: int) -> Detection:
+    min_x, min_y, max_x, max_y = box
+    return Detection(
+        x_min=min_x,
+        y_min=min_y,
+        x_max=max_x,
+        y_max=max_y,
+        confidence=float(min(inliers / 40, 1)),
+        class_name="match",
+    )
+
+
+def _track_held_points(
+    previous_gray: np.ndarray,
+    current_gray: np.ndarray,
+    reference_points: np.ndarray,
+    scene_points: np.ndarray,
+    anchor_count: int,
+    source_shape: Tuple[int, int],
+) -> Optional[Tuple[Detection, np.ndarray, np.ndarray]]:
+    if previous_gray.shape != current_gray.shape or len(scene_points) < MIN_HOMOGRAPHY_POINTS:
+        return None
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+    next_points, status, _ = cv2.calcOpticalFlowPyrLK(
+        previous_gray, current_gray, scene_points, None, winSize=(21, 21), maxLevel=3, criteria=criteria
+    )
+    if next_points is None or status is None:
+        return None
+    back_points, back_status, _ = cv2.calcOpticalFlowPyrLK(
+        current_gray, previous_gray, next_points, None, winSize=(21, 21), maxLevel=3, criteria=criteria
+    )
+    if back_points is None or back_status is None:
+        return None
+    forward_backward = np.linalg.norm((back_points - scene_points).reshape(-1, 2), axis=1)
+    keep = status.ravel().astype(bool) & back_status.ravel().astype(bool) & (forward_backward < TRACK_BACKTRACK_ERROR)
+    needed = max(MIN_HOMOGRAPHY_POINTS, int(anchor_count * MIN_TRACKED_FRACTION))
+    if int(keep.sum()) < needed:
+        return None
+    homography, mask = cv2.findHomography(
+        reference_points[keep], next_points[keep], cv2.RANSAC, 5.0, None, 5000, 0.999
+    )
+    if homography is None or mask is None or not np.isfinite(homography).all():
+        return None
+    inlier_mask = mask.ravel().astype(bool)
+    inliers = int(inlier_mask.sum())
+    if inliers < needed or inliers / int(keep.sum()) < MIN_INLIER_RATIO:
+        return None
+    box = _box_from_homography(homography, source_shape, current_gray.shape[:2])
+    if box is None:
+        return None
+    kept_reference = reference_points[keep][inlier_mask].reshape(-1, 1, 2).copy()
+    kept_scene = next_points[keep][inlier_mask].reshape(-1, 1, 2).copy()
+    return _detection_from_box(box, inliers), kept_reference, kept_scene
 
 
 def _match_decision(inliers: int, good_count: int, minimum: int, grace: int) -> Tuple[bool, bool]:

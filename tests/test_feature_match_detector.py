@@ -283,47 +283,55 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         self.assertGreaterEqual(first.x_max, 305)
         self.assertGreaterEqual(first.y_max, 225)
 
-    def test_camera_grace_holds_then_clears(self):
-        image = ViamImage(self.png_bytes, CameraMimeType.PNG)
+    def test_hold_follows_motion_and_drops_when_the_object_is_gone(self):
+        patch = Image.fromarray(np.random.default_rng(1).integers(0, 255, (100, 100), dtype=np.uint8))
+        patch_path = self.root / "patch.png"
+        patch.save(patch_path)
+
+        def placed(x: int, y: int) -> ViamImage:
+            canvas = Image.new("L", (320, 240), 255)
+            canvas.paste(patch, (x, y))
+            encoded = io.BytesIO()
+            canvas.convert("RGB").save(encoded, format="PNG")
+            return ViamImage(encoded.getvalue(), CameraMimeType.PNG)
 
         class ImageCamera:
-            def __init__(self):
+            def __init__(self, image: ViamImage):
                 self.image = image
 
             async def get_images(self, **kwargs):
                 return [self.image], None
 
-        camera = ImageCamera()
+        camera = ImageCamera(placed(40, 30))
         detector = featureMatchDetector.new(
-            config_for(source_image_path=str(self.png_path), cameras=["cam"], min_good_matches=8),
+            config_for(source_image_path=str(patch_path), cameras=["cam"], min_good_matches=8),
             {Camera.get_resource_name("cam"): camera},
         )
         now = {"t": 1_000.0}
         detector._clock = lambda: now["t"]
         detector.detection_hold_seconds = 5
-        held = asyncio.run(detector.get_detections_from_camera("cam"))
-        self.assertEqual(len(held), 1)
+        first = asyncio.run(detector.get_detections_from_camera("cam"))
+        self.assertEqual(len(first), 1)
         self.assertEqual(detector._camera_grace["cam"], fmd.GRACE_FRAMES)
-        detection = asyncio.run(detector.get_detections(image))[0]
-        detector._remember("cam", [detection], False)
-        self.assertEqual(detector._camera_grace["cam"], fmd.GRACE_FRAMES - 1)
+
+        detector.min_good_matches = 100_000
+        camera.image = placed(70, 50)
+        now["t"] = 1_001.0
+        followed = asyncio.run(detector.get_detections_from_camera("cam"))
+        self.assertEqual(len(followed), 1)
+        first_center = ((first[0].x_min + first[0].x_max) / 2, (first[0].y_min + first[0].y_max) / 2)
+        followed_center = ((followed[0].x_min + followed[0].x_max) / 2, (followed[0].y_min + followed[0].y_max) / 2)
+        self.assertGreater(followed_center[0] - first_center[0], 15)
+        self.assertGreater(followed_center[1] - first_center[1], 8)
+        self.assertLess(followed_center[0] - first_center[0], 50)
+        self.assertLess(followed_center[1] - first_center[1], 40)
 
         blank = io.BytesIO()
-        Image.new("RGB", (80, 80), "white").save(blank, format="PNG")
+        Image.new("RGB", (320, 240), "white").save(blank, format="PNG")
         camera.image = ViamImage(blank.getvalue(), CameraMimeType.PNG)
         now["t"] = 1_002.0
-        repeated = asyncio.run(detector.get_detections_from_camera("cam"))
-        self.assertEqual(len(repeated), 1)
-        self.assertEqual((repeated[0].x_min, repeated[0].y_min, repeated[0].x_max, repeated[0].y_max), (held[0].x_min, held[0].y_min, held[0].x_max, held[0].y_max))
-        self.assertNotIn("cam", detector._camera_grace)
-
-        now["t"] = 1_006.0
         self.assertEqual(asyncio.run(detector.get_detections_from_camera("cam")), [])
         self.assertNotIn("cam", detector._held_detections)
-
-        one_shot = asyncio.run(detector.get_detections(image))
-        self.assertEqual(len(one_shot), 1)
-        self.assertEqual(detector._held_detections, {})
 
     def test_match_decision(self):
         self.assertEqual(fmd._match_decision(20, 30, 15, 0), (True, True))
