@@ -1,4 +1,4 @@
-viam-sdk~=0.83.1
+viam-sdk~=0.84.0
 numpy
 opencv-python
 pillow
