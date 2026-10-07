@@ -298,6 +298,9 @@ class featureMatchDetector(Vision):
             response["source_image_path"] = self.source_image_path
         return response
 
+    async def get_detections_3d(self, camera_name: str, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support 3D detections")
+
     async def get_classifications(self, image: ViamImage, count: int, *, extra=None, timeout=None):
         raise NotImplementedError("feature-match-detector does not support classifications")
 
