@@ -19,16 +19,15 @@ from urllib.parse import urlparse
 
 import numpy as np
 from PIL import Image
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from viam.components.camera import Camera
 from viam.media.video import CameraMimeType, ViamImage
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.service.vision import Detection
 from viam.utils import dict_to_struct
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # Imported for its side effect: loads src.featureMatchDetector into sys.modules.
 import src  # noqa: E402, F401
