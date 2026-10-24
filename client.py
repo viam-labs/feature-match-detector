@@ -9,12 +9,17 @@ from viam.rpc.dial import Credentials, DialOptions
 from viam.services.vision import VisionClient
 
 # these must be set, you can get them from your robot's 'CODE SAMPLE' tab
-robot_secret = os.getenv('ROBOT_SECRET') or ''
-robot_address = os.getenv('ROBOT_ADDRESS') or ''
+robot_secret = os.getenv("ROBOT_SECRET") or ""
+robot_address = os.getenv("ROBOT_ADDRESS") or ""
+
 
 async def connect():
     creds = Credentials(type="robot-location-secret", payload=robot_secret)
-    opts = RobotClient.Options(refresh_interval=0, dial_options=DialOptions(credentials=creds), log_level=logging.DEBUG)
+    opts = RobotClient.Options(
+        refresh_interval=0,
+        dial_options=DialOptions(credentials=creds),
+        log_level=logging.DEBUG,
+    )
     return await RobotClient.at_address(robot_address, opts)
 
 
@@ -29,7 +34,7 @@ async def main():
     image_bytes = Path("./test/robot_head_2.jpg").read_bytes()
     detections = await fd.get_detections(ViamImage(image_bytes, CameraMimeType.JPEG))
     print(detections)
-    
+
     await robot.close()
 
 
