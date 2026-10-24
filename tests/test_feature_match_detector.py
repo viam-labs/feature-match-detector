@@ -30,7 +30,8 @@ from viam.proto.app.robot import ComponentConfig
 from viam.proto.service.vision import Detection
 from viam.utils import dict_to_struct
 
-import src  # noqa: E402
+# Imported for its side effect: loads src.featureMatchDetector into sys.modules.
+import src  # noqa: E402, F401
 
 fmd = sys.modules["src.featureMatchDetector"]
 featureMatchDetector = fmd.featureMatchDetector

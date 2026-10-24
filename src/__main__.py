@@ -1,8 +1,8 @@
 import asyncio
-import sys
 
 from viam.module.module import Module
 from viam.services.vision import Vision
+
 from .featureMatchDetector import featureMatchDetector
 
 

@@ -3,11 +3,11 @@ import hashlib
 import io
 import time
 import urllib.request
-from urllib.error import HTTPError
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, ClassVar, List, Mapping, Optional, Sequence, Tuple, cast
+from urllib.error import HTTPError
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -16,7 +16,6 @@ import numpy as np
 import pymupdf
 from PIL import Image
 from typing_extensions import Self
-
 from viam.components.camera import Camera
 from viam.logging import getLogger
 from viam.media.utils.pil import viam_to_pil_image
