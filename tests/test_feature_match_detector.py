@@ -19,18 +19,18 @@ from urllib.parse import urlparse
 
 import numpy as np
 from PIL import Image
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from viam.components.camera import Camera
 from viam.media.video import CameraMimeType, ViamImage
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.service.vision import Detection
 from viam.utils import dict_to_struct
 
-import src  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Imported for its side effect: loads src.featureMatchDetector into sys.modules.
+import src  # noqa: E402, F401
 
 fmd = sys.modules["src.featureMatchDetector"]
 featureMatchDetector = fmd.featureMatchDetector
@@ -53,8 +53,7 @@ def checker_svg(phase: int = 0) -> bytes:
 
 
 BLANK_SVG = (
-    b'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">'
-    b'<rect width="40" height="40" fill="white"/></svg>'
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="white"/></svg>'
 )
 
 
@@ -150,7 +149,9 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         with self.assertRaises(Exception):
             featureMatchDetector.validate_config(config_for(source_image_path=str(self.png_path), cameras="cam"))
         with self.assertRaises(Exception):
-            featureMatchDetector.validate_config(config_for(source_image_path=str(self.png_path), detection_hold_seconds=-1))
+            featureMatchDetector.validate_config(
+                config_for(source_image_path=str(self.png_path), detection_hold_seconds=-1)
+            )
 
     def test_local_png_and_file_uri_match(self):
         detector = featureMatchDetector.new(
@@ -173,7 +174,9 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         self.assertIn("other-cam", str(raised.exception))
         self.assertIn("cam-a", str(raised.exception))
 
-        file_detector = featureMatchDetector.new(config_for(source_image_path=self.png_path.as_uri(), min_good_matches=8), {})
+        file_detector = featureMatchDetector.new(
+            config_for(source_image_path=self.png_path.as_uri(), min_good_matches=8), {}
+        )
         file_detections = asyncio.run(file_detector.get_detections(ViamImage(self.png_bytes, CameraMimeType.PNG)))
         self.assertEqual(len(file_detections), 1)
 
@@ -277,7 +280,10 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         first = asyncio.run(detector.get_detections(image))[0]
         second = asyncio.run(detector.get_detections(image))[0]
         self.assertEqual(detector._camera_grace, {})
-        self.assertEqual((first.x_min, first.y_min, first.x_max, first.y_max), (second.x_min, second.y_min, second.x_max, second.y_max))
+        self.assertEqual(
+            (first.x_min, first.y_min, first.x_max, first.y_max),
+            (second.x_min, second.y_min, second.x_max, second.y_max),
+        )
         self.assertLessEqual(first.x_min, 15)
         self.assertLessEqual(first.y_min, 15)
         self.assertGreaterEqual(first.x_max, 305)

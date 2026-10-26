@@ -3,11 +3,11 @@ import hashlib
 import io
 import time
 import urllib.request
-from urllib.error import HTTPError
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, ClassVar, List, Mapping, Optional, Sequence, Tuple, cast
+from urllib.error import HTTPError
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -16,7 +16,6 @@ import numpy as np
 import pymupdf
 from PIL import Image
 from typing_extensions import Self
-
 from viam.components.camera import Camera
 from viam.logging import getLogger
 from viam.media.utils.pil import viam_to_pil_image
@@ -249,7 +248,9 @@ class featureMatchDetector(Vision):
             scene_points = held["scene_points"]
             reference_points = held["reference_points"]
             anchor_count = held["anchor_count"]
-        tracked = _track_held_points(previous_gray, query_gray, reference_points, scene_points, anchor_count, source_shape)
+        tracked = _track_held_points(
+            previous_gray, query_gray, reference_points, scene_points, anchor_count, source_shape
+        )
         if tracked is None:
             with self._source_lock:
                 self._held_detections.pop(camera_name, None)
@@ -574,9 +575,7 @@ def _track_held_points(
     needed = max(MIN_HOMOGRAPHY_POINTS, int(anchor_count * MIN_TRACKED_FRACTION))
     if int(keep.sum()) < needed:
         return None
-    homography, mask = cv2.findHomography(
-        reference_points[keep], next_points[keep], cv2.RANSAC, 5.0, None, 5000, 0.999
-    )
+    homography, mask = cv2.findHomography(reference_points[keep], next_points[keep], cv2.RANSAC, 5.0, None, 5000, 0.999)
     if homography is None or mask is None or not np.isfinite(homography).all():
         return None
     inlier_mask = mask.ravel().astype(bool)
