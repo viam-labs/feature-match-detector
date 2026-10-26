@@ -52,24 +52,11 @@ CONTENT_TYPE_SUFFIX = {
     "image/bmp": ".bmp",
     "image/tiff": ".tiff",
 }
-KNOWN_SUFFIXES = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-    ".gif",
-    ".bmp",
-    ".tif",
-    ".tiff",
-    ".svg",
-    ".svgz",
-}
+KNOWN_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".svg", ".svgz"}
 
 
 class featureMatchDetector(Vision):
-    MODEL: ClassVar[Model] = Model(
-        ModelFamily("viam-labs", "detector"), "feature-match-detector"
-    )
+    MODEL: ClassVar[Model] = Model(ModelFamily("viam-labs", "detector"), "feature-match-detector")
 
     def __init__(self, name: str):
         super().__init__(name)
@@ -87,32 +74,24 @@ class featureMatchDetector(Vision):
         self._source_lock = Lock()
 
     @classmethod
-    def new(
-        cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
-    ) -> Self:
+    def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
         detector = cls(config.name)
         detector.reconfigure(config, dependencies)
         return detector
 
     @classmethod
-    def validate_config(
-        cls, config: ComponentConfig
-    ) -> Tuple[Sequence[str], Sequence[str]]:
+    def validate_config(cls, config: ComponentConfig) -> Tuple[Sequence[str], Sequence[str]]:
         attrs = _attributes(config)
         _validate_source(str(attrs.get("source_image_path", "")))
         _min_good_matches(attrs.get("min_good_matches"))
         _detection_hold_seconds(attrs.get("detection_hold_seconds"))
         return _configured_cameras(attrs.get("cameras")), []
 
-    def reconfigure(
-        self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
-    ):
+    def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         attrs = _attributes(config)
         self.cameras = list(_configured_cameras(attrs.get("cameras")))
         self.min_good_matches = _min_good_matches(attrs.get("min_good_matches"))
-        self.detection_hold_seconds = _detection_hold_seconds(
-            attrs.get("detection_hold_seconds")
-        )
+        self.detection_hold_seconds = _detection_hold_seconds(attrs.get("detection_hold_seconds"))
         self.dependencies = dependencies
         self._load_reference(str(attrs.get("source_image_path", "")))
 
@@ -133,9 +112,7 @@ class featureMatchDetector(Vision):
             for img in images:
                 if img.mime_type == mime_type:
                     return img
-        raise Exception(
-            f"Camera '{camera_name}' did not return a JPEG, PNG, or RGBA image"
-        )
+        raise Exception(f"Camera '{camera_name}' did not return a JPEG, PNG, or RGBA image")
 
     def _load_reference(self, source: str, *, refresh: bool = False):
         pending_cache = None
@@ -152,9 +129,7 @@ class featureMatchDetector(Vision):
         if descriptors is not None:
             descriptors = np.asarray(descriptors, dtype=np.float32)
         if keypoints is None or descriptors is None or len(descriptors) < 2:
-            raise Exception(
-                f"Reference image '{source}' does not contain enough features to match"
-            )
+            raise Exception(f"Reference image '{source}' does not contain enough features to match")
         if pending_cache is not None:
             path = _store_reference_bytes(source, pending_cache[0], pending_cache[1])
         with self._source_lock:
@@ -164,9 +139,7 @@ class featureMatchDetector(Vision):
             self.source_shape = gray.shape[:2]
             self._camera_grace = {}
             self._held_detections = {}
-        LOGGER.info(
-            "Loaded reference image from %s (%s features)", path, len(keypoints)
-        )
+        LOGGER.info("Loaded reference image from %s (%s features)", path, len(keypoints))
 
     async def get_detections_from_camera(
         self,
@@ -186,20 +159,14 @@ class featureMatchDetector(Vision):
     ) -> List[Detection]:
         return self._match_image(image)
 
-    def _match_image(
-        self, image: ViamImage, camera_name: Optional[str] = None
-    ) -> List[Detection]:
+    def _match_image(self, image: ViamImage, camera_name: Optional[str] = None) -> List[Detection]:
         with self._source_lock:
             source_keypoints = self.source_keypoints
             source_descriptors = self.source_descriptors
             source_shape = self.source_shape
             minimum = self.min_good_matches
             grace = self._camera_grace.get(camera_name, 0) if camera_name else 0
-        if (
-            source_keypoints is None
-            or source_descriptors is None
-            or source_shape is None
-        ):
+        if source_keypoints is None or source_descriptors is None or source_shape is None:
             return []
 
         query_gray = _viam_image_to_gray(image)
@@ -215,32 +182,14 @@ class featureMatchDetector(Vision):
                 if first.distance < LOWE_RATIO * second.distance:
                     good.append(first)
             if len(good) >= MIN_HOMOGRAPHY_POINTS:
-                src_pts = np.float32(
-                    [source_keypoints[match.queryIdx].pt for match in good]
-                ).reshape(-1, 1, 2)
-                dst_pts = np.float32(
-                    [keypoints[match.trainIdx].pt for match in good]
-                ).reshape(-1, 1, 2)
-                homography, mask = cv2.findHomography(
-                    src_pts, dst_pts, cv2.RANSAC, 5.0, None, 5000, 0.999
-                )
-                if (
-                    homography is not None
-                    and mask is not None
-                    and np.isfinite(homography).all()
-                ):
+                src_pts = np.float32([source_keypoints[match.queryIdx].pt for match in good]).reshape(-1, 1, 2)
+                dst_pts = np.float32([keypoints[match.trainIdx].pt for match in good]).reshape(-1, 1, 2)
+                homography, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0, None, 5000, 0.999)
+                if homography is not None and mask is not None and np.isfinite(homography).all():
                     inlier_mask = mask.ravel().astype(bool)
                     inliers = int(inlier_mask.sum())
-                    accepted, strict = _match_decision(
-                        inliers, len(good), minimum, grace
-                    )
-                    box = (
-                        _box_from_homography(
-                            homography, source_shape, query_gray.shape[:2]
-                        )
-                        if accepted
-                        else None
-                    )
+                    accepted, strict = _match_decision(inliers, len(good), minimum, grace)
+                    box = _box_from_homography(homography, source_shape, query_gray.shape[:2]) if accepted else None
                     if box is not None:
                         detection = _detection_from_box(box, inliers)
                         return self._remember_match(
@@ -284,16 +233,9 @@ class featureMatchDetector(Vision):
         return [detection]
 
     def _follow_hold(
-        self,
-        camera_name: Optional[str],
-        query_gray: np.ndarray,
-        source_shape: Optional[Tuple[int, int]],
+        self, camera_name: Optional[str], query_gray: np.ndarray, source_shape: Optional[Tuple[int, int]]
     ) -> List[Detection]:
-        if (
-            camera_name is None
-            or self.detection_hold_seconds <= 0
-            or source_shape is None
-        ):
+        if camera_name is None or self.detection_hold_seconds <= 0 or source_shape is None:
             return []
         now = self._clock()
         with self._source_lock:
@@ -307,12 +249,7 @@ class featureMatchDetector(Vision):
             reference_points = held["reference_points"]
             anchor_count = held["anchor_count"]
         tracked = _track_held_points(
-            previous_gray,
-            query_gray,
-            reference_points,
-            scene_points,
-            anchor_count,
-            source_shape,
+            previous_gray, query_gray, reference_points, scene_points, anchor_count, source_shape
         )
         if tracked is None:
             with self._source_lock:
@@ -362,26 +299,14 @@ class featureMatchDetector(Vision):
             response["source_image_path"] = self.source_image_path
         return response
 
-    async def get_classifications(
-        self, image: ViamImage, count: int, *, extra=None, timeout=None
-    ):
-        raise NotImplementedError(
-            "feature-match-detector does not support classifications"
-        )
+    async def get_classifications(self, image: ViamImage, count: int, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support classifications")
 
-    async def get_classifications_from_camera(
-        self, camera_name: str, count: int, *, extra=None, timeout=None
-    ):
-        raise NotImplementedError(
-            "feature-match-detector does not support classifications"
-        )
+    async def get_classifications_from_camera(self, camera_name: str, count: int, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support classifications")
 
-    async def get_object_point_clouds(
-        self, camera_name: str, *, extra=None, timeout=None
-    ):
-        raise NotImplementedError(
-            "feature-match-detector does not support object point clouds"
-        )
+    async def get_object_point_clouds(self, camera_name: str, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support object point clouds")
 
     async def capture_all_from_camera(
         self,
@@ -484,9 +409,7 @@ def _validate_source(source: str):
 def _require_remote_source(source: str):
     scheme = urlparse(source).scheme.lower()
     if scheme not in REMOTE_SCHEMES:
-        raise Exception(
-            "refetch_reference requires an http:// or https:// source_image_path"
-        )
+        raise Exception("refetch_reference requires an http:// or https:// source_image_path")
     _validate_source(source)
 
 
@@ -518,22 +441,16 @@ def _download_reference(uri: str) -> Path:
 
 def _fetch_reference(uri: str) -> Tuple[bytes, str]:
     LOGGER.info("Downloading reference image from %s", uri)
-    request = urllib.request.Request(
-        uri, headers={"User-Agent": "feature-match-detector"}
-    )
+    request = urllib.request.Request(uri, headers={"User-Agent": "feature-match-detector"})
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             data = response.read()
             content_type = response.headers.get_content_type()
     except HTTPError as exc:
         exc.close()
-        raise Exception(
-            f"Failed to download reference image from {uri}: {exc}"
-        ) from exc
+        raise Exception(f"Failed to download reference image from {uri}: {exc}") from exc
     except Exception as exc:
-        raise Exception(
-            f"Failed to download reference image from {uri}: {exc}"
-        ) from exc
+        raise Exception(f"Failed to download reference image from {uri}: {exc}") from exc
     if not data:
         raise Exception(f"Reference image download from {uri} was empty")
     return data, content_type
@@ -640,48 +557,25 @@ def _track_held_points(
     anchor_count: int,
     source_shape: Tuple[int, int],
 ) -> Optional[Tuple[Detection, np.ndarray, np.ndarray]]:
-    if (
-        previous_gray.shape != current_gray.shape
-        or len(scene_points) < MIN_HOMOGRAPHY_POINTS
-    ):
+    if previous_gray.shape != current_gray.shape or len(scene_points) < MIN_HOMOGRAPHY_POINTS:
         return None
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
     next_points, status, _ = cv2.calcOpticalFlowPyrLK(
-        previous_gray,
-        current_gray,
-        scene_points,
-        None,
-        winSize=(21, 21),
-        maxLevel=3,
-        criteria=criteria,
+        previous_gray, current_gray, scene_points, None, winSize=(21, 21), maxLevel=3, criteria=criteria
     )
     if next_points is None or status is None:
         return None
     back_points, back_status, _ = cv2.calcOpticalFlowPyrLK(
-        current_gray,
-        previous_gray,
-        next_points,
-        None,
-        winSize=(21, 21),
-        maxLevel=3,
-        criteria=criteria,
+        current_gray, previous_gray, next_points, None, winSize=(21, 21), maxLevel=3, criteria=criteria
     )
     if back_points is None or back_status is None:
         return None
-    forward_backward = np.linalg.norm(
-        (back_points - scene_points).reshape(-1, 2), axis=1
-    )
-    keep = (
-        status.ravel().astype(bool)
-        & back_status.ravel().astype(bool)
-        & (forward_backward < TRACK_BACKTRACK_ERROR)
-    )
+    forward_backward = np.linalg.norm((back_points - scene_points).reshape(-1, 2), axis=1)
+    keep = status.ravel().astype(bool) & back_status.ravel().astype(bool) & (forward_backward < TRACK_BACKTRACK_ERROR)
     needed = max(MIN_HOMOGRAPHY_POINTS, int(anchor_count * MIN_TRACKED_FRACTION))
     if int(keep.sum()) < needed:
         return None
-    homography, mask = cv2.findHomography(
-        reference_points[keep], next_points[keep], cv2.RANSAC, 5.0, None, 5000, 0.999
-    )
+    homography, mask = cv2.findHomography(reference_points[keep], next_points[keep], cv2.RANSAC, 5.0, None, 5000, 0.999)
     if homography is None or mask is None or not np.isfinite(homography).all():
         return None
     inlier_mask = mask.ravel().astype(bool)
@@ -696,9 +590,7 @@ def _track_held_points(
     return _detection_from_box(box, inliers), kept_reference, kept_scene
 
 
-def _match_decision(
-    inliers: int, good_count: int, minimum: int, grace: int
-) -> Tuple[bool, bool]:
+def _match_decision(inliers: int, good_count: int, minimum: int, grace: int) -> Tuple[bool, bool]:
     """Return whether the homography is a match, and whether it cleared the full inlier bar."""
     if good_count <= 0 or inliers < MIN_HOMOGRAPHY_POINTS:
         return False, False
@@ -716,9 +608,7 @@ def _box_from_homography(
     homography: np.ndarray, source_shape: Tuple[int, int], query_shape: Tuple[int, int]
 ) -> Optional[Tuple[int, int, int, int]]:
     height, width = source_shape
-    corners = np.float32(
-        [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]
-    ).reshape(-1, 1, 2)
+    corners = np.float32([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]).reshape(-1, 1, 2)
     projected = cv2.perspectiveTransform(corners, homography)
     if projected is None or not np.isfinite(projected).all():
         return None

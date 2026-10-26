@@ -10,7 +10,5 @@ from .featureMatchDetector import featureMatchDetector
 Registry.register_resource_creator(
     Vision.API,
     featureMatchDetector.MODEL,
-    ResourceCreatorRegistration(
-        featureMatchDetector.new, featureMatchDetector.validate_config
-    ),
+    ResourceCreatorRegistration(featureMatchDetector.new, featureMatchDetector.validate_config),
 )

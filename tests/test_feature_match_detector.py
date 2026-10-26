@@ -42,9 +42,7 @@ def checker_svg(phase: int = 0) -> bytes:
     for y in range(0, 400, 40):
         for x in range(0, 400, 40):
             if (x // 40 + y // 40 + phase) % 2 == 0:
-                cells.append(
-                    f'<rect x="{x}" y="{y}" width="40" height="40" fill="black"/>'
-                )
+                cells.append(f'<rect x="{x}" y="{y}" width="40" height="40" fill="black"/>')
     body = "".join(cells)
     return (
         '<?xml version="1.0"?>'
@@ -55,8 +53,7 @@ def checker_svg(phase: int = 0) -> bytes:
 
 
 BLANK_SVG = (
-    b'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">'
-    b'<rect width="40" height="40" fill="white"/></svg>'
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="white"/></svg>'
 )
 
 
@@ -130,64 +127,38 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         return f"http://127.0.0.1:{self.port}/{name}"
 
     def cached_files(self):
-        return [
-            path
-            for path in self.cache.iterdir()
-            if path.is_file() and not path.name.startswith(".")
-        ]
+        return [path for path in self.cache.iterdir() if path.is_file() and not path.name.startswith(".")]
 
     def test_validate_config(self):
         deps, optional = featureMatchDetector.validate_config(
-            config_for(
-                source_image_path=str(self.png_path),
-                cameras=["cam-a", "cam-a", "cam-b"],
-                min_good_matches=8,
-            )
+            config_for(source_image_path=str(self.png_path), cameras=["cam-a", "cam-a", "cam-b"], min_good_matches=8)
         )
         self.assertEqual(list(deps), ["cam-a", "cam-b"])
         self.assertEqual(list(optional), [])
 
-        featureMatchDetector.validate_config(
-            config_for(source_image_path=self.png_path.as_uri())
-        )
-        featureMatchDetector.validate_config(
-            config_for(source_image_path="https://example.com/ref.svg")
-        )
+        featureMatchDetector.validate_config(config_for(source_image_path=self.png_path.as_uri()))
+        featureMatchDetector.validate_config(config_for(source_image_path="https://example.com/ref.svg"))
         self.assertEqual(self.downloads, 0)
 
         with self.assertRaises(Exception):
             featureMatchDetector.validate_config(config_for())
         with self.assertRaises(Exception):
-            featureMatchDetector.validate_config(
-                config_for(source_image_path=str(self.root / "missing.jpg"))
-            )
+            featureMatchDetector.validate_config(config_for(source_image_path=str(self.root / "missing.jpg")))
+        with self.assertRaises(Exception):
+            featureMatchDetector.validate_config(config_for(source_image_path="ftp://example.com/a.jpg"))
+        with self.assertRaises(Exception):
+            featureMatchDetector.validate_config(config_for(source_image_path=str(self.png_path), cameras="cam"))
         with self.assertRaises(Exception):
             featureMatchDetector.validate_config(
-                config_for(source_image_path="ftp://example.com/a.jpg")
-            )
-        with self.assertRaises(Exception):
-            featureMatchDetector.validate_config(
-                config_for(source_image_path=str(self.png_path), cameras="cam")
-            )
-        with self.assertRaises(Exception):
-            featureMatchDetector.validate_config(
-                config_for(
-                    source_image_path=str(self.png_path), detection_hold_seconds=-1
-                )
+                config_for(source_image_path=str(self.png_path), detection_hold_seconds=-1)
             )
 
     def test_local_png_and_file_uri_match(self):
         detector = featureMatchDetector.new(
-            config_for(
-                source_image_path=str(self.png_path),
-                cameras=["cam-a", "cam-b"],
-                min_good_matches=8,
-            ),
+            config_for(source_image_path=str(self.png_path), cameras=["cam-a", "cam-b"], min_good_matches=8),
             {},
         )
-        detections = asyncio.run(
-            detector.get_detections(ViamImage(self.png_bytes, CameraMimeType.PNG))
-        )
+        detections = asyncio.run(detector.get_detections(ViamImage(self.png_bytes, CameraMimeType.PNG)))
         self.assertEqual(len(detections), 1)
         self.assertIsInstance(detections[0], Detection)
         self.assertEqual(detections[0].class_name, "match")
@@ -206,75 +177,50 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         file_detector = featureMatchDetector.new(
             config_for(source_image_path=self.png_path.as_uri(), min_good_matches=8), {}
         )
-        file_detections = asyncio.run(
-            file_detector.get_detections(ViamImage(self.png_bytes, CameraMimeType.PNG))
-        )
+        file_detections = asyncio.run(file_detector.get_detections(ViamImage(self.png_bytes, CameraMimeType.PNG)))
         self.assertEqual(len(file_detections), 1)
 
     def test_svg_and_svgz_references(self):
         for source in (str(self.svg_path), str(self.svgz_path)):
-            detector = featureMatchDetector.new(
-                config_for(source_image_path=source, min_good_matches=6), {}
-            )
-            detections = asyncio.run(
-                detector.get_detections(ViamImage(self.svg_png, CameraMimeType.PNG))
-            )
+            detector = featureMatchDetector.new(config_for(source_image_path=source, min_good_matches=6), {})
+            detections = asyncio.run(detector.get_detections(ViamImage(self.svg_png, CameraMimeType.PNG)))
             self.assertEqual(len(detections), 1, source)
 
-        detector = featureMatchDetector.new(
-            config_for(source_image_path=str(self.svg_path), min_good_matches=6), {}
-        )
-        svg_query = asyncio.run(
-            detector.get_detections(ViamImage(self.svg, CameraMimeType.PNG))
-        )
+        detector = featureMatchDetector.new(config_for(source_image_path=str(self.svg_path), min_good_matches=6), {})
+        svg_query = asyncio.run(detector.get_detections(ViamImage(self.svg, CameraMimeType.PNG)))
         self.assertEqual(len(svg_query), 1)
 
         blank = io.BytesIO()
         Image.new("RGB", (80, 80), "white").save(blank, format="PNG")
-        self.assertEqual(
-            asyncio.run(
-                detector.get_detections(ViamImage(blank.getvalue(), CameraMimeType.PNG))
-            ),
-            [],
-        )
+        self.assertEqual(asyncio.run(detector.get_detections(ViamImage(blank.getvalue(), CameraMimeType.PNG))), [])
 
     def test_remote_svg_is_cached_then_reused(self):
         uri = self.url("v1.svg")
-        featureMatchDetector.new(
-            config_for(source_image_path=uri, cameras=["cam"], min_good_matches=6), {}
-        )
+        featureMatchDetector.new(config_for(source_image_path=uri, cameras=["cam"], min_good_matches=6), {})
         self.assertEqual(self.downloads, 1)
         cached = self.cached_files()
         self.assertEqual(len(cached), 1)
         self.assertEqual(cached[0].suffix, ".svg")
         self.assertEqual(cached[0].read_bytes(), self.svg)
 
-        featureMatchDetector.new(
-            config_for(source_image_path=uri, min_good_matches=6), {}
-        )
+        featureMatchDetector.new(config_for(source_image_path=uri, min_good_matches=6), {})
         self.assertEqual(self.downloads, 1)
 
     def test_refetch_reference_replaces_cache(self):
         uri = self.url("ref.svg")
-        detector = featureMatchDetector.new(
-            config_for(source_image_path=uri, min_good_matches=6), {}
-        )
+        detector = featureMatchDetector.new(config_for(source_image_path=uri, min_good_matches=6), {})
         self.assertEqual(self.downloads, 1)
         original_features = detector.source_descriptors.tobytes()
         try:
             (self.web / "ref.svg").write_bytes(self.svg_v2)
-            featureMatchDetector.new(
-                config_for(source_image_path=uri, min_good_matches=6), {}
-            )
+            featureMatchDetector.new(config_for(source_image_path=uri, min_good_matches=6), {})
             self.assertEqual(self.downloads, 1)
 
             result = asyncio.run(detector.do_command({"refetch_reference": True}))
             self.assertEqual(result["source_image_path"], uri)
             self.assertEqual(self.downloads, 2)
             self.assertEqual(self.cached_files()[0].read_bytes(), self.svg_v2)
-            self.assertNotEqual(
-                detector.source_descriptors.tobytes(), original_features
-            )
+            self.assertNotEqual(detector.source_descriptors.tobytes(), original_features)
             self.assertEqual(detector.source_image_path, uri)
 
             (self.web / "ref.svg").write_bytes(BLANK_SVG)
@@ -283,19 +229,13 @@ class FeatureMatchDetectorTest(unittest.TestCase):
                 asyncio.run(detector.do_command({"refetch_reference": True}))
             self.assertIn("enough features", str(raised.exception))
             self.assertEqual(self.cached_files()[0].read_bytes(), self.svg_v2)
-            self.assertEqual(
-                detector.source_descriptors.tobytes(), features_before_failure
-            )
+            self.assertEqual(detector.source_descriptors.tobytes(), features_before_failure)
         finally:
             (self.web / "ref.svg").write_bytes(self.svg)
 
     def test_refetch_reference_can_switch_url(self):
-        detector = featureMatchDetector.new(
-            config_for(source_image_path=self.url("v1.svg"), min_good_matches=6), {}
-        )
-        result = asyncio.run(
-            detector.do_command({"refetch_reference": self.url("v2.svg")})
-        )
+        detector = featureMatchDetector.new(config_for(source_image_path=self.url("v1.svg"), min_good_matches=6), {})
+        result = asyncio.run(detector.do_command({"refetch_reference": self.url("v2.svg")}))
         self.assertEqual(result["source_image_path"], self.url("v2.svg"))
         self.assertEqual(self.downloads, 2)
         cached = {path.name: path.read_bytes() for path in self.cached_files()}
@@ -304,29 +244,21 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         self.assertEqual(urlparse(detector.source_image_path).path, "/v2.svg")
 
     def test_refetch_reference_rejects_local_files_and_download_errors(self):
-        detector = featureMatchDetector.new(
-            config_for(source_image_path=str(self.png_path), min_good_matches=8), {}
-        )
+        detector = featureMatchDetector.new(config_for(source_image_path=str(self.png_path), min_good_matches=8), {})
         with self.assertRaises(Exception) as raised:
             asyncio.run(detector.do_command({"refetch_reference": True}))
         self.assertIn("http:// or https://", str(raised.exception))
         self.assertEqual(detector.source_image_path, str(self.png_path))
 
-        remote = featureMatchDetector.new(
-            config_for(source_image_path=self.url("v1.svg"), min_good_matches=6), {}
-        )
+        remote = featureMatchDetector.new(config_for(source_image_path=self.url("v1.svg"), min_good_matches=6), {})
         with self.assertRaises(Exception) as raised:
-            asyncio.run(
-                remote.do_command({"refetch_reference": self.url("missing.svg")})
-            )
+            asyncio.run(remote.do_command({"refetch_reference": self.url("missing.svg")}))
         self.assertIn("Failed to download", str(raised.exception))
         self.assertEqual(remote.source_image_path, self.url("v1.svg"))
         self.assertEqual(self.cached_files()[0].read_bytes(), self.svg)
 
     def test_do_command_updates_source_and_threshold(self):
-        detector = featureMatchDetector.new(
-            config_for(source_image_path=str(self.png_path), min_good_matches=8), {}
-        )
+        detector = featureMatchDetector.new(config_for(source_image_path=str(self.png_path), min_good_matches=8), {})
         asyncio.run(
             detector.do_command(
                 {
@@ -339,15 +271,11 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         )
         self.assertEqual(detector.min_good_matches, 6)
         self.assertEqual(detector.source_image_path, str(self.svg_path))
-        detections = asyncio.run(
-            detector.get_detections(ViamImage(self.svg_png, CameraMimeType.PNG))
-        )
+        detections = asyncio.run(detector.get_detections(ViamImage(self.svg_png, CameraMimeType.PNG)))
         self.assertEqual(len(detections), 1)
 
     def test_self_match_box_is_stable_and_covers_the_image(self):
-        detector = featureMatchDetector.new(
-            config_for(source_image_path=str(self.png_path), min_good_matches=8), {}
-        )
+        detector = featureMatchDetector.new(config_for(source_image_path=str(self.png_path), min_good_matches=8), {})
         image = ViamImage(self.png_bytes, CameraMimeType.PNG)
         first = asyncio.run(detector.get_detections(image))[0]
         second = asyncio.run(detector.get_detections(image))[0]
@@ -362,9 +290,7 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         self.assertGreaterEqual(first.y_max, 225)
 
     def test_hold_follows_motion_and_drops_when_the_object_is_gone(self):
-        patch = Image.fromarray(
-            np.random.default_rng(1).integers(0, 255, (100, 100), dtype=np.uint8)
-        )
+        patch = Image.fromarray(np.random.default_rng(1).integers(0, 255, (100, 100), dtype=np.uint8))
         patch_path = self.root / "patch.png"
         patch.save(patch_path)
 
@@ -384,9 +310,7 @@ class FeatureMatchDetectorTest(unittest.TestCase):
 
         camera = ImageCamera(placed(40, 30))
         detector = featureMatchDetector.new(
-            config_for(
-                source_image_path=str(patch_path), cameras=["cam"], min_good_matches=8
-            ),
+            config_for(source_image_path=str(patch_path), cameras=["cam"], min_good_matches=8),
             {Camera.get_resource_name("cam"): camera},
         )
         now = {"t": 1_000.0}
@@ -401,14 +325,8 @@ class FeatureMatchDetectorTest(unittest.TestCase):
         now["t"] = 1_001.0
         followed = asyncio.run(detector.get_detections_from_camera("cam"))
         self.assertEqual(len(followed), 1)
-        first_center = (
-            (first[0].x_min + first[0].x_max) / 2,
-            (first[0].y_min + first[0].y_max) / 2,
-        )
-        followed_center = (
-            (followed[0].x_min + followed[0].x_max) / 2,
-            (followed[0].y_min + followed[0].y_max) / 2,
-        )
+        first_center = ((first[0].x_min + first[0].x_max) / 2, (first[0].y_min + first[0].y_max) / 2)
+        followed_center = ((followed[0].x_min + followed[0].x_max) / 2, (followed[0].y_min + followed[0].y_max) / 2)
         self.assertGreater(followed_center[0] - first_center[0], 15)
         self.assertGreater(followed_center[1] - first_center[1], 8)
         self.assertLess(followed_center[0] - first_center[0], 50)

@@ -15,11 +15,7 @@ robot_address = os.getenv("ROBOT_ADDRESS") or ""
 
 async def connect():
     creds = Credentials(type="robot-location-secret", payload=robot_secret)
-    opts = RobotClient.Options(
-        refresh_interval=0,
-        dial_options=DialOptions(credentials=creds),
-        log_level=logging.DEBUG,
-    )
+    opts = RobotClient.Options(refresh_interval=0, dial_options=DialOptions(credentials=creds), log_level=logging.DEBUG)
     return await RobotClient.at_address(robot_address, opts)
 
 
