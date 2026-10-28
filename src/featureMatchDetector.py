@@ -305,6 +305,9 @@ class featureMatchDetector(Vision):
     async def get_classifications_from_camera(self, camera_name: str, count: int, *, extra=None, timeout=None):
         raise NotImplementedError("feature-match-detector does not support classifications")
 
+    async def get_detections_3d(self, camera_name: str, *, extra=None, timeout=None):
+        raise NotImplementedError("feature-match-detector does not support 3D detections")
+
     async def get_object_point_clouds(self, camera_name: str, *, extra=None, timeout=None):
         raise NotImplementedError("feature-match-detector does not support object point clouds")
 
